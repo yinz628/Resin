@@ -97,6 +97,11 @@ func (r *StateRepo) SaveSystemConfig(cfg *config.RuntimeConfig, version int, upd
 // UpsertPlatform inserts or updates a platform by ID.
 // If the name collides with a different platform's name, ErrConflict is returned.
 func (r *StateRepo) UpsertPlatform(p model.Platform) error {
+	p.Name = platform.NormalizePlatformName(p.Name)
+	if err := platform.ValidatePlatformName(p.Name); err != nil {
+		return fmt.Errorf("platform name: %w", err)
+	}
+
 	// Validate strongly-typed filters before persistence.
 	if _, err := platform.CompileRegexFilters(p.RegexFilters); err != nil {
 		return err

@@ -518,6 +518,12 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "平台 / 账号": "Platform / Account",
   "平台不存在或已被删除": "Platform does not exist or has been deleted",
   "平台名称不能为空": "Platform name cannot be empty",
+  "平台名称不能包含字符 .:|/\\@?#%~": "Platform name cannot contain characters .:|/\\@?#%~",
+  "平台名称不能包含空格、Tab、换行、回车":
+    "Platform name cannot contain spaces, tabs, newlines, or carriage returns",
+  "平台名称不能为保留字": "Platform name cannot be a reserved name",
+  "平台名不能包含 .:|/\\@?#%~、空格、Tab、换行、回车，也不能为保留字。":
+    "Platform name cannot contain .:|/\\@?#%~, spaces, tabs, newlines, or carriage returns, and cannot be a reserved name.",
   "平台详情板块": "Platform detail sections",
   "平台运行态趋势和快照": "Platform runtime trends and snapshots",
   "请求日志详情": "Request log details",

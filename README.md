@@ -60,6 +60,7 @@ services:
     container_name: resin
     restart: unless-stopped
     environment:
+      RESIN_AUTH_VERSION: "V1" # Required: LEGACY_V0 or V1
       RESIN_ADMIN_TOKEN: "admin123" # Change to your admin dashboard password
       RESIN_PROXY_TOKEN: "my-token" # Change to your proxy password
       RESIN_LISTEN_ADDRESS: 0.0.0.0
@@ -93,23 +94,23 @@ Use one of the client access modes in the following sections.
 
 If you just need a high-performance, large-capacity proxy pool with automatic health management, Resin works out of the box.
 
-Once Resin is running, point your app to `http://<RESIN_PROXY_TOKEN>::@127.0.0.1:2260`.
+Once Resin is running, point your app to `http://127.0.0.1:2260`.
 If you do not want a proxy password, explicitly set `RESIN_PROXY_TOKEN=""` (the variable must still be defined). Then connect directly to `http://127.0.0.1:2260`.
 
 Example with curl:
 
 ```bash
 curl -x http://127.0.0.1:2260 \
-  -U "my-token::" \
+  -U ":my-token" \
   https://api.ipify.org
 ```
 
 If your client supports overriding `BASE_URL`, you can also use reverse-proxy mode.
-URL format: `/token/Platform(optional):/protocol/target`.
+URL format: `/token/Platform(optional).Account(optional)/protocol/target`.
 Example request to `https://api.ipify.org`:
 
 ```bash
-curl http://127.0.0.1:2260/my-token/:/https/api.ipify.org
+curl http://127.0.0.1:2260/my-token/./https/api.ipify.org
 ```
 
 > Choosing forward vs reverse proxy: when possible, reverse proxy is recommended for better observability. If your client cannot change BaseURL, or requires scenarios better served by forward proxy (such as uTLS or non-WebAPI traffic), use forward proxy.
@@ -129,14 +130,14 @@ For forward proxy, put Platform in proxy auth info:
 
 ```bash
 curl -x http://127.0.0.1:2260 \
-  -U "my-token:MyPlatform:" \
+  -U "MyPlatform:my-token" \
   https://api.ipify.org
 ```
 
 For reverse proxy, include Platform in the URL prefix:
 
 ```bash
-curl http://127.0.0.1:2260/my-token/MyPlatform:/https/api.ipify.org
+curl http://127.0.0.1:2260/my-token/MyPlatform/https/api.ipify.org
 ```
 
 ## 🔌 Supported Protocols and Subscription Formats
@@ -144,7 +145,7 @@ curl http://127.0.0.1:2260/my-token/MyPlatform:/https/api.ipify.org
 ### Access protocols
 
 - Forward proxy inbound: HTTP proxy, including regular HTTP requests and HTTPS tunneling via `CONNECT`.
-- Reverse proxy inbound: URL mode `/token/platform:account/protocol/host/path`, where `protocol` supports `http` and `https`.
+- Reverse proxy inbound: URL mode `/token/platform.account/protocol/host/path`, where `protocol` supports `http` and `https`.
 - WebSocket in reverse mode: `ws`/`wss` upgrades are supported, but the URL `protocol` segment must still be `http` (for `ws`) or `https` (for `wss`).
 
 ### Subscription sources
@@ -181,7 +182,9 @@ First, understand two core concepts:
 
 ### Sticky auth format
 
-Across all access protocols, the auth identity format is: `RESIN_PROXY_TOKEN:Platform:Account`.
+Across all access protocols, with `RESIN_AUTH_VERSION=V1` the identity format is: `Platform.Account:RESIN_PROXY_TOKEN`.
+During migration, set `RESIN_AUTH_VERSION=LEGACY_V0` to keep the legacy shape `RESIN_PROXY_TOKEN:Platform:Account`.
+Platform names cannot be `api` (case-insensitive), and cannot contain `.:|/\\@?#%~` or whitespace controls.
 To enable sticky routing, provide `Account`.
 
 #### Method 1: Forward proxy (HTTP Proxy)
@@ -189,38 +192,52 @@ To enable sticky routing, provide `Account`.
 Write identity directly in proxy auth username:
 
 ```bash
-# Format: -U "token:platform:account"
+# V1 format: -U "platform.account:token"
 # Bind business account user_tom to a stable dedicated outbound IP
 curl -x http://127.0.0.1:2260 \
-  -U "my-token:Default:user_tom" \
+  -U "Default.user_tom:my-token" \
   https://api.ipify.org
 ```
 
-#### Method 2: Reverse proxy (URL mode)
+#### Method 2: Reverse proxy (URL Account, quick/manual debug)
 
 By replacing your service BaseURL with Resin reverse-proxy URL, traffic goes through Resin directly.
-Advanced URL format: `http://host:2260/token/platform:account/protocol/target`:
+Advanced URL format: `http://host:2260/token/platform.account/protocol/target`:
 
 ```bash
 # Example: user_tom accesses api.ipify.org over https
-curl "http://127.0.0.1:2260/my-token/Default:user_tom/https/api.ipify.org"
+curl "http://127.0.0.1:2260/my-token/Default.user_tom/https/api.ipify.org"
 ```
 
-#### Method 3: Reverse proxy + header rules (zero-intrusion)
+> The URL Account segment is designed for quick use and manual debugging.
+> For long-running production integrations, prefer passing Account by header (`X-Resin-Account`).
 
-If your client or SDK cannot dynamically append `Account` in reverse-proxy URLs, Resin can extract Account from your existing business headers (for example API Key, Token, Cookie).
+#### Method 3: Reverse proxy + headers (recommended integration path)
 
-In many cases, this means you only change a static `BaseURL`, with no business logic changes.
+If your client/SDK supports custom request headers, pass Account explicitly with `X-Resin-Account`.
+This is the recommended and most stable method.
+
+Account source priority is:
+`X-Resin-Account` header > Account in reverse-proxy URL > header extraction rules.
+
+Example:
+
+```bash
+curl "http://127.0.0.1:2260/my-token/MyPlatform/https/api.example.com/v1/orders" \
+  -H "X-Resin-Account: user_tom"
+```
+
+If your client cannot set `X-Resin-Account`, Resin can still extract Account from existing business headers (for example API Key, Token, Cookie) via header rules.
 
 Assume your requests already include an `Authorization` header:
 
 1. In Platform Configuration, set `Reverse-proxy empty-account behavior` to `Extract specified request headers as Account`.
 2. Set `Headers used to extract Account` to `Authorization`.
 
-Then even if Account is omitted in URL, Resin will parse it from headers:
+Then even if Account is omitted in URL, Resin can still parse it from headers:
 
 ```bash
-curl "http://127.0.0.1:2260/my-token/MyPlatform:/https/api.example.com/v1/orders" \
+curl "http://127.0.0.1:2260/my-token/MyPlatform/https/api.example.com/v1/orders" \
   -H "Authorization: sk-abc123"
 ```
 
@@ -248,8 +265,8 @@ Different clients integrate Resin differently, with different code-intrusion lev
 
 | Access Method | Code Intrusion | Notes |
 | :--- | :--- | :--- |
-| Forward proxy | 🟡 **Medium intrusion** | Per-user requests need different auth info, such as `token:platform:account`. |
-| Reverse proxy | 🟡 **Medium intrusion** | Build reverse-proxy URL paths dynamically with account information. |
+| Forward proxy | 🟡 **Medium intrusion** | Per-user requests need different auth info, such as `platform.account:token` (V1). |
+| Reverse proxy | 🟡 **Medium intrusion** | Add `X-Resin-Account` request header or build reverse-proxy URL paths dynamically with account information. |
 | Reverse proxy + header rules | 🟢 **Zero/low intrusion** | Resin can extract Account from original headers (for example `Authorization`) and bind IP automatically. |
 
 👉 **Fast integration script/prompt:**
@@ -268,6 +285,7 @@ Go to the project's <a href="https://github.com/Resinat/Resin/releases">Release<
 
 ```bash
 RESIN_ADMIN_TOKEN=<admin-dashboard-password> \
+RESIN_AUTH_VERSION=V1 \
 RESIN_PROXY_TOKEN=<proxy-password> \
 RESIN_STATE_DIR=./data/state \
 RESIN_CACHE_DIR=./data/cache \
@@ -297,6 +315,7 @@ go build -tags "with_quic with_wireguard with_grpc with_utls" -o resin ./cmd/res
 
 # 4. Run
 RESIN_ADMIN_TOKEN=<admin-dashboard-password> \
+RESIN_AUTH_VERSION=V1 \
 RESIN_PROXY_TOKEN=<proxy-password> \
 RESIN_STATE_DIR=./data/state \
 RESIN_CACHE_DIR=./data/cache \
@@ -313,6 +332,10 @@ RESIN_PORT=2260 \
 
 - **Q: Startup fails with `RESIN_PROXY_TOKEN` undefined?**
   - **A**: Even if you do not want a proxy password, you must explicitly set it to empty: `RESIN_PROXY_TOKEN=""`.
+- **Q: Startup fails with `RESIN_AUTH_VERSION` undefined?**
+  - **A**: Set it to `LEGACY_V0` or `V1`. For new deployments, use `V1`. For upgrades with legacy data, see [doc/v1.0.0-migration-guide.md](doc/v1.0.0-migration-guide.md).
+- **Q: Is there a dedicated v1.0.0 migration guide?**
+  - **A**: Yes. See [doc/v1.0.0-migration-guide.md](doc/v1.0.0-migration-guide.md).
 - **Q: How to write reverse-proxy paths for WebSocket (ws/wss)?**
   - **A**: In the URL path, the protocol field must still be `http` or `https` (not `ws`/`wss`). Resin auto-detects and handles WebSocket upgrade.
 

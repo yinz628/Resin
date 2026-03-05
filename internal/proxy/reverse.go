@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/outbound"
 	"github.com/Resinat/Resin/internal/platform"
@@ -24,6 +25,7 @@ type PlatformLookup interface {
 // ReverseProxyConfig holds dependencies for the reverse proxy.
 type ReverseProxyConfig struct {
 	ProxyToken        string
+	AuthVersion       string
 	Router            *routing.Router
 	Pool              outbound.PoolAccessor
 	PlatformLookup    PlatformLookup
@@ -36,9 +38,12 @@ type ReverseProxyConfig struct {
 }
 
 // ReverseProxy implements an HTTP reverse proxy.
-// Path format: /PROXY_TOKEN/Platform:Account/protocol/host/path?query
+// Identity segment format depends on auth version:
+// V1: /PROXY_TOKEN/Platform.Account/protocol/host/path?query
+// LEGACY_V0: /PROXY_TOKEN/Platform:Account/protocol/host/path?query
 type ReverseProxy struct {
 	token             string
+	authVersion       config.AuthVersion
 	router            *routing.Router
 	pool              outbound.PoolAccessor
 	platLook          PlatformLookup
@@ -62,8 +67,13 @@ func NewReverseProxy(cfg ReverseProxyConfig) *ReverseProxy {
 	if transportPool == nil {
 		transportPool = NewOutboundTransportPool(transportCfg)
 	}
+	authVersion := config.NormalizeAuthVersion(cfg.AuthVersion)
+	if authVersion == "" {
+		authVersion = config.AuthVersionLegacyV0
+	}
 	return &ReverseProxy{
 		token:           cfg.ProxyToken,
+		authVersion:     authVersion,
 		router:          cfg.Router,
 		pool:            cfg.Pool,
 		platLook:        cfg.PlatformLookup,
@@ -74,6 +84,16 @@ func NewReverseProxy(cfg ReverseProxyConfig) *ReverseProxy {
 		transportConfig: transportCfg,
 		transportPool:   transportPool,
 	}
+}
+
+func (p *ReverseProxy) effectiveAuthVersion() config.AuthVersion {
+	if p == nil {
+		return config.AuthVersionLegacyV0
+	}
+	if p.authVersion == config.AuthVersionV1 {
+		return config.AuthVersionV1
+	}
+	return config.AuthVersionLegacyV0
 }
 
 func (p *ReverseProxy) outboundHTTPTransport(routed routedOutbound) *http.Transport {
@@ -99,6 +119,8 @@ type parsedPath struct {
 // forwardingIdentityHeaders are commonly used to disclose proxy chain identity.
 // These are stripped from outbound reverse-proxy requests.
 var forwardingIdentityHeaders = []string{
+	// Internal account override header must not leak to upstream services.
+	"X-Resin-Account",
 	"Forwarded",
 	"X-Forwarded-For",
 	"X-Forwarded-Host",
@@ -125,7 +147,11 @@ func stripForwardingIdentityHeaders(header http.Header) {
 	header["X-Forwarded-For"] = nil
 }
 
-func decodePathSegment(segment string) (string, *ProxyError) {
+// decodePathSegmentV1 decodes one escaped URL path segment for V1 parsing.
+//
+// This function intentionally duplicates legacy decoding logic to keep V1 and
+// LEGACY_V0 parsing paths structurally independent.
+func decodePathSegmentV1(segment string) (string, *ProxyError) {
 	decoded, err := url.PathUnescape(segment)
 	if err != nil {
 		return "", ErrURLParseError
@@ -133,46 +159,59 @@ func decodePathSegment(segment string) (string, *ProxyError) {
 	return decoded, nil
 }
 
-// parsePath parses /PROXY_TOKEN/Platform:Account/protocol/host/path...
+// decodePathSegmentLegacy decodes one escaped URL path segment for LEGACY_V0
+// parsing.
 //
-// rawPath must be the escaped URL path (r.URL.EscapedPath), not r.URL.Path.
-// This preserves encoded delimiters like %2F in the trailing path.
+// This function intentionally duplicates V1 decoding logic so legacy code can
+// be removed without touching V1 parser implementations.
+func decodePathSegmentLegacy(segment string) (string, *ProxyError) {
+	decoded, err := url.PathUnescape(segment)
+	if err != nil {
+		return "", ErrURLParseError
+	}
+	return decoded, nil
+}
+
+// parsePath dispatches to a version-specific parser.
+//
+// New and legacy parsers intentionally remain isolated (including duplicated
+// parsing steps) so LEGACY_V0 can be removed cleanly without touching V1 code.
 func (p *ReverseProxy) parsePath(rawPath string) (*parsedPath, *ProxyError) {
-	// Trim leading slash.
+	if p.effectiveAuthVersion() == config.AuthVersionV1 {
+		return p.parsePathV1(rawPath)
+	}
+	return p.parsePathLegacy(rawPath)
+}
+
+// parsePathV1 parses reverse proxy path using V1 identity rules.
+//
+// rawPath must be r.URL.EscapedPath (not r.URL.Path) to preserve escaped
+// delimiters in trailing path segments.
+func (p *ReverseProxy) parsePathV1(rawPath string) (*parsedPath, *ProxyError) {
 	path := strings.TrimPrefix(rawPath, "/")
 	if path == "" {
 		return nil, ErrAuthFailed
 	}
 
-	// Split into segments.
-	segments := strings.SplitN(path, "/", 5) // token, plat:acct, protocol, host, rest
-
-	// First segment: token.
-	token, perr := decodePathSegment(segments[0])
+	segments := strings.SplitN(path, "/", 5) // token, identity, protocol, host, rest
+	token, perr := decodePathSegmentV1(segments[0])
 	if perr != nil {
 		return nil, perr
 	}
 	if p.token != "" && token != p.token {
 		return nil, ErrAuthFailed
 	}
-
-	// Need at least: token, plat:acct, protocol, host (4 segments).
 	if len(segments) < 4 {
 		return nil, ErrURLParseError
 	}
 
-	// Second segment: Platform:Account (split on first ":").
-	identity, perr := decodePathSegment(segments[1])
+	identity, perr := decodePathSegmentV1(segments[1])
 	if perr != nil {
 		return nil, perr
 	}
-	if !strings.Contains(identity, ":") {
-		return nil, ErrURLParseError
-	}
-	platName, account := parsePlatformAccount(identity)
+	platName, account := parseV1PlatformAccountIdentity(identity)
 
-	// Third segment: protocol.
-	protocolSeg, perr := decodePathSegment(segments[2])
+	protocolSeg, perr := decodePathSegmentV1(segments[2])
 	if perr != nil {
 		return nil, perr
 	}
@@ -181,20 +220,82 @@ func (p *ReverseProxy) parsePath(rawPath string) (*parsedPath, *ProxyError) {
 		return nil, ErrInvalidProtocol
 	}
 
-	// Fourth segment: host.
-	host, perr := decodePathSegment(segments[3])
+	host, perr := decodePathSegmentV1(segments[3])
 	if perr != nil {
 		return nil, perr
 	}
 	if host == "" {
 		return nil, ErrInvalidHost
 	}
-	// Validate host: must be a valid hostname or host:port.
 	if !isValidHost(host) {
 		return nil, ErrInvalidHost
 	}
 
-	// Remaining path.
+	remainingPath := ""
+	if len(segments) == 5 {
+		remainingPath = segments[4]
+	}
+
+	return &parsedPath{
+		PlatformName: platName,
+		Account:      account,
+		Protocol:     protocol,
+		Host:         host,
+		Path:         remainingPath,
+	}, nil
+}
+
+// parsePathLegacy parses reverse proxy path using LEGACY_V0 identity rules.
+//
+// This parser is intentionally independent from V1 parser code, including
+// repeated parsing steps, to keep legacy removal low-risk.
+func (p *ReverseProxy) parsePathLegacy(rawPath string) (*parsedPath, *ProxyError) {
+	path := strings.TrimPrefix(rawPath, "/")
+	if path == "" {
+		return nil, ErrAuthFailed
+	}
+
+	segments := strings.SplitN(path, "/", 5) // token, identity, protocol, host, rest
+	token, perr := decodePathSegmentLegacy(segments[0])
+	if perr != nil {
+		return nil, perr
+	}
+	if p.token != "" && token != p.token {
+		return nil, ErrAuthFailed
+	}
+	if len(segments) < 4 {
+		return nil, ErrURLParseError
+	}
+
+	identity, perr := decodePathSegmentLegacy(segments[1])
+	if perr != nil {
+		return nil, perr
+	}
+	if !strings.Contains(identity, ":") {
+		return nil, ErrURLParseError
+	}
+	platName, account := parseLegacyPlatformAccountIdentity(identity)
+
+	protocolSeg, perr := decodePathSegmentLegacy(segments[2])
+	if perr != nil {
+		return nil, perr
+	}
+	protocol := strings.ToLower(protocolSeg)
+	if protocol != "http" && protocol != "https" {
+		return nil, ErrInvalidProtocol
+	}
+
+	host, perr := decodePathSegmentLegacy(segments[3])
+	if perr != nil {
+		return nil, perr
+	}
+	if host == "" {
+		return nil, ErrInvalidHost
+	}
+	if !isValidHost(host) {
+		return nil, ErrInvalidHost
+	}
+
 	remainingPath := ""
 	if len(segments) == 5 {
 		remainingPath = segments[4]
@@ -435,11 +536,17 @@ func (p *ReverseProxy) resolveReverseProxyAccount(
 	r *http.Request,
 	plat *platform.Platform,
 ) (string, platform.ReverseProxyEmptyAccountBehavior, bool) {
+	behavior := effectiveEmptyAccountBehavior(plat)
+	if r != nil {
+		if headerAccount := r.Header.Get("X-Resin-Account"); headerAccount != "" {
+			return headerAccount, behavior, false
+		}
+	}
+
 	account := ""
 	if parsed != nil {
 		account = parsed.Account
 	}
-	behavior := effectiveEmptyAccountBehavior(plat)
 	if account != "" {
 		return account, behavior, false
 	}

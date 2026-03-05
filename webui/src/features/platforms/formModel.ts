@@ -3,8 +3,33 @@ import { allocationPolicies, emptyAccountBehaviors, missActions } from "./consta
 import { parseHeaderLines, parseLinesToList } from "./formParsers";
 import type { Platform, PlatformCreateInput, PlatformUpdateInput } from "./types";
 
+const platformNameForbiddenChars = ".:|/\\@?#%~";
+const platformNameForbiddenSpacing = " \t\r\n";
+const platformNameReserved = "api";
+
+function containsAny(source: string, chars: string): boolean {
+  for (const ch of chars) {
+    if (source.includes(ch)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export const platformNameRuleHint = "平台名不能包含 .:|/\\@?#%~、空格、Tab、换行、回车，也不能为保留字。";
+
 export const platformFormSchema = z.object({
-  name: z.string().trim().min(1, "平台名称不能为空"),
+  name: z.string().trim()
+    .min(1, "平台名称不能为空")
+    .refine((value) => !containsAny(value, platformNameForbiddenChars), {
+      message: "平台名称不能包含字符 .:|/\\@?#%~",
+    })
+    .refine((value) => !containsAny(value, platformNameForbiddenSpacing), {
+      message: "平台名称不能包含空格、Tab、换行、回车",
+    })
+    .refine((value) => value.toLowerCase() !== platformNameReserved, {
+      message: "平台名称不能为保留字",
+    }),
   sticky_ttl: z.string().optional(),
   regex_filters_text: z.string().optional(),
   region_filters_text: z.string().optional(),

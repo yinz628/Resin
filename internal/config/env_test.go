@@ -18,8 +18,9 @@ func setEnvs(t *testing.T, envs map[string]string) {
 // requiredEnvs returns the minimum env vars needed for LoadEnvConfig to succeed.
 func requiredEnvs() map[string]string {
 	return map[string]string{
-		"RESIN_ADMIN_TOKEN": "admin-secret",
-		"RESIN_PROXY_TOKEN": "proxy-secret",
+		"RESIN_AUTH_VERSION": "LEGACY_V0",
+		"RESIN_ADMIN_TOKEN":  "admin-secret",
+		"RESIN_PROXY_TOKEN":  "proxy-secret",
 	}
 }
 
@@ -73,6 +74,9 @@ func TestLoadEnvConfig_Defaults(t *testing.T) {
 	assertEqual(t, "RequestLogQueueFlushBatchSize", cfg.RequestLogQueueFlushBatchSize, 4096)
 	assertEqual(t, "RequestLogDBMaxMB", cfg.RequestLogDBMaxMB, 512)
 	assertEqual(t, "RequestLogDBRetainCount", cfg.RequestLogDBRetainCount, 5)
+
+	// Auth
+	assertEqual(t, "AuthVersion", cfg.AuthVersion, AuthVersionLegacyV0)
 
 	// Metrics
 	assertEqual(t, "MetricThroughputIntervalSeconds", cfg.MetricThroughputIntervalSeconds, 2)
@@ -170,6 +174,7 @@ func TestLoadEnvConfig_DefaultPlatformFixedHeaderMultiline(t *testing.T) {
 }
 
 func TestLoadEnvConfig_MissingAdminToken(t *testing.T) {
+	t.Setenv("RESIN_AUTH_VERSION", "LEGACY_V0")
 	t.Setenv("RESIN_PROXY_TOKEN", "proxy-secret")
 	// Ensure RESIN_ADMIN_TOKEN is not set
 	os.Unsetenv("RESIN_ADMIN_TOKEN")
@@ -182,6 +187,7 @@ func TestLoadEnvConfig_MissingAdminToken(t *testing.T) {
 }
 
 func TestLoadEnvConfig_MissingProxyToken(t *testing.T) {
+	t.Setenv("RESIN_AUTH_VERSION", "LEGACY_V0")
 	t.Setenv("RESIN_ADMIN_TOKEN", "admin-secret")
 	os.Unsetenv("RESIN_PROXY_TOKEN")
 
@@ -192,7 +198,34 @@ func TestLoadEnvConfig_MissingProxyToken(t *testing.T) {
 	assertContains(t, err.Error(), "RESIN_PROXY_TOKEN must be defined (can be empty)")
 }
 
+func TestLoadEnvConfig_MissingAuthVersion(t *testing.T) {
+	t.Setenv("RESIN_ADMIN_TOKEN", "admin-secret")
+	t.Setenv("RESIN_PROXY_TOKEN", "proxy-secret")
+	os.Unsetenv("RESIN_AUTH_VERSION")
+
+	_, err := LoadEnvConfig()
+	if err == nil {
+		t.Fatal("expected error for missing RESIN_AUTH_VERSION")
+	}
+	assertContains(t, err.Error(), "RESIN_AUTH_VERSION must be defined")
+	assertContains(t, err.Error(), "set RESIN_AUTH_VERSION=LEGACY_V0 first for compatibility")
+	assertContains(t, err.Error(), AuthMigrationGuideURL)
+}
+
+func TestLoadEnvConfig_InvalidAuthVersion(t *testing.T) {
+	t.Setenv("RESIN_AUTH_VERSION", "V2")
+	t.Setenv("RESIN_ADMIN_TOKEN", "admin-secret")
+	t.Setenv("RESIN_PROXY_TOKEN", "proxy-secret")
+
+	_, err := LoadEnvConfig()
+	if err == nil {
+		t.Fatal("expected error for invalid RESIN_AUTH_VERSION")
+	}
+	assertContains(t, err.Error(), "RESIN_AUTH_VERSION: invalid value")
+}
+
 func TestLoadEnvConfig_EmptyTokensAllowedWhenDefined(t *testing.T) {
+	t.Setenv("RESIN_AUTH_VERSION", "LEGACY_V0")
 	t.Setenv("RESIN_ADMIN_TOKEN", "")
 	t.Setenv("RESIN_PROXY_TOKEN", "")
 
@@ -214,6 +247,7 @@ func TestLoadEnvConfig_ProxyTokenForbiddenChars(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RESIN_AUTH_VERSION", "LEGACY_V0")
 			t.Setenv("RESIN_ADMIN_TOKEN", "admin-secret")
 			t.Setenv("RESIN_PROXY_TOKEN", tc.token)
 
@@ -230,6 +264,7 @@ func TestLoadEnvConfig_ProxyTokenReservedKeywords(t *testing.T) {
 	tests := []string{"api", "healthz", "ui"}
 	for _, token := range tests {
 		t.Run(token, func(t *testing.T) {
+			t.Setenv("RESIN_AUTH_VERSION", "LEGACY_V0")
 			t.Setenv("RESIN_ADMIN_TOKEN", "admin-secret")
 			t.Setenv("RESIN_PROXY_TOKEN", token)
 
@@ -240,6 +275,54 @@ func TestLoadEnvConfig_ProxyTokenReservedKeywords(t *testing.T) {
 			assertContains(t, err.Error(), "reserved keyword")
 		})
 	}
+}
+
+func TestLoadEnvConfig_ProxyTokenForbiddenChars_V1(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+	}{
+		{"dot", "bad.token"},
+		{"colon", "bad:token"},
+		{"pipe", "bad|token"},
+		{"slash", "bad/token"},
+		{"backslash", "bad\\token"},
+		{"at", "bad@token"},
+		{"question", "bad?token"},
+		{"hash", "bad#token"},
+		{"percent", "bad%token"},
+		{"tilde", "bad~token"},
+		{"space", "bad token"},
+		{"tab", "bad\ttoken"},
+		{"newline", "bad\ntoken"},
+		{"carriage_return", "bad\rtoken"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RESIN_AUTH_VERSION", "V1")
+			t.Setenv("RESIN_ADMIN_TOKEN", "admin-secret")
+			t.Setenv("RESIN_PROXY_TOKEN", tc.token)
+
+			_, err := LoadEnvConfig()
+			if err == nil {
+				t.Fatal("expected error for forbidden char in RESIN_PROXY_TOKEN when V1")
+			}
+			assertContains(t, err.Error(), "RESIN_PROXY_TOKEN:")
+			assertContains(t, err.Error(), AuthMigrationGuideURL)
+		})
+	}
+}
+
+func TestLoadEnvConfig_ProxyTokenLegacyAllowsDot(t *testing.T) {
+	t.Setenv("RESIN_AUTH_VERSION", "LEGACY_V0")
+	t.Setenv("RESIN_ADMIN_TOKEN", "admin-secret")
+	t.Setenv("RESIN_PROXY_TOKEN", "proxy.token")
+
+	cfg, err := LoadEnvConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertEqual(t, "ProxyToken", cfg.ProxyToken, "proxy.token")
 }
 
 func TestLoadEnvConfig_EmptyListenAddress(t *testing.T) {

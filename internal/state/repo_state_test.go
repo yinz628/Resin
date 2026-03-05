@@ -2,6 +2,7 @@ package state
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strconv"
 	"testing"
@@ -399,6 +400,31 @@ func TestStateRepo_Platform_ValidationRejectsInvalidRegex(t *testing.T) {
 	list, _ := repo.ListPlatforms()
 	if len(list) != 1 {
 		t.Fatalf("expected 1 platform, got %d", len(list))
+	}
+}
+
+func TestStateRepo_Platform_ValidationRejectsInvalidName(t *testing.T) {
+	repo := newTestStateRepo(t)
+	now := time.Now().UnixNano()
+
+	tests := []string{
+		"bad:name",
+		"api",
+	}
+	for i, name := range tests {
+		bad := model.Platform{
+			ID:                     fmt.Sprintf("plat-%d", i+1),
+			Name:                   name,
+			StickyTTLNs:            1000,
+			RegexFilters:           []string{},
+			RegionFilters:          []string{},
+			ReverseProxyMissAction: "TREAT_AS_EMPTY",
+			AllocationPolicy:       "BALANCED",
+			UpdatedAtNs:            now,
+		}
+		if err := repo.UpsertPlatform(bad); err == nil {
+			t.Fatalf("expected error for invalid platform name %q", name)
+		}
 	}
 }
 

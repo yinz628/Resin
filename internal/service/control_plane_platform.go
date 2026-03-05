@@ -263,6 +263,10 @@ func validatePlatformConfig(cfg *platformConfig, validateRegionFilters bool) *Se
 }
 
 func (s *ControlPlaneService) compileAndUpsertPlatform(id string, cfg platformConfig) (model.Platform, *platform.Platform, *ServiceError) {
+	if err := platform.ValidatePlatformName(cfg.Name); err != nil {
+		return model.Platform{}, nil, invalidArg("name: " + err.Error())
+	}
+
 	plat, err := cfg.toRuntime(id)
 	if err != nil {
 		return model.Platform{}, nil, invalidArg(err.Error())
@@ -271,6 +275,9 @@ func (s *ControlPlaneService) compileAndUpsertPlatform(id string, cfg platformCo
 	if err := s.Engine.UpsertPlatform(mp); err != nil {
 		if errors.Is(err, state.ErrConflict) {
 			return model.Platform{}, nil, conflict("platform name already exists")
+		}
+		if strings.HasPrefix(err.Error(), "platform name: ") {
+			return model.Platform{}, nil, invalidArg("name: " + strings.TrimPrefix(err.Error(), "platform name: "))
 		}
 		return model.Platform{}, nil, internal("persist platform", err)
 	}
@@ -326,10 +333,16 @@ type CreatePlatformRequest struct {
 // CreatePlatform creates a new platform.
 func (s *ControlPlaneService) CreatePlatform(req CreatePlatformRequest) (*PlatformResponse, error) {
 	// Validate name.
-	if req.Name == nil || strings.TrimSpace(*req.Name) == "" {
+	if req.Name == nil {
 		return nil, invalidArg("name is required")
 	}
-	name := strings.TrimSpace(*req.Name)
+	name := platform.NormalizePlatformName(*req.Name)
+	if name == "" {
+		return nil, invalidArg("name is required")
+	}
+	if err := platform.ValidatePlatformName(name); err != nil {
+		return nil, invalidArg("name: " + err.Error())
+	}
 	if name == platform.DefaultPlatformName {
 		return nil, conflict("cannot use reserved name 'Default'")
 	}
@@ -423,7 +436,10 @@ func (s *ControlPlaneService) UpdatePlatform(id string, patchJSON json.RawMessag
 	if nameStr, ok, err := patch.optionalNonEmptyString("name"); err != nil {
 		return nil, err
 	} else if ok {
-		cfg.Name = nameStr
+		cfg.Name = platform.NormalizePlatformName(nameStr)
+		if err := platform.ValidatePlatformName(cfg.Name); err != nil {
+			return nil, invalidArg("name: " + err.Error())
+		}
 		if cfg.Name == platform.DefaultPlatformName && current.ID != platform.DefaultPlatformID {
 			return nil, conflict("cannot use reserved name 'Default'")
 		}
@@ -523,14 +539,9 @@ func (s *ControlPlaneService) ResetPlatformToDefault(id string) (*PlatformRespon
 	}
 
 	cfg := s.defaultPlatformConfig(name)
-	plat, err := cfg.toRuntime(id)
-	if err != nil {
-		// Environment defaults should be validated on process startup.
-		return nil, internal("compile default platform regex filters", err)
-	}
-	mp := cfg.toModel(id, time.Now().UnixNano())
-	if err := s.Engine.UpsertPlatform(mp); err != nil {
-		return nil, internal("persist platform", err)
+	mp, plat, svcErr := s.compileAndUpsertPlatform(id, cfg)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	if err := s.Pool.ReplacePlatform(plat); err != nil {

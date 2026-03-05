@@ -485,6 +485,59 @@ func TestCreatePlatform_BuildsRoutableViewBeforePublish(t *testing.T) {
 	}
 }
 
+func TestCreatePlatform_RejectsReservedAPIName(t *testing.T) {
+	dir := t.TempDir()
+	engine, closer, err := state.PersistenceBootstrap(
+		filepath.Join(dir, "state"),
+		filepath.Join(dir, "cache"),
+	)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = closer.Close()
+	})
+
+	subMgr := topology.NewSubscriptionManager()
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+
+	cp := &ControlPlaneService{
+		Engine: engine,
+		Pool:   pool,
+		SubMgr: subMgr,
+		EnvCfg: &config.EnvConfig{
+			DefaultPlatformStickyTTL:              30 * time.Minute,
+			DefaultPlatformRegexFilters:           []string{},
+			DefaultPlatformRegionFilters:          []string{},
+			DefaultPlatformReverseProxyMissAction: "TREAT_AS_EMPTY",
+			DefaultPlatformAllocationPolicy:       "BALANCED",
+		},
+	}
+
+	name := "api"
+	_, err = cp.CreatePlatform(CreatePlatformRequest{Name: &name})
+	if err == nil {
+		t.Fatal("expected CreatePlatform to reject reserved platform name api")
+	}
+
+	var svcErr *ServiceError
+	if !errors.As(err, &svcErr) {
+		t.Fatalf("expected ServiceError, got %T: %v", err, err)
+	}
+	if svcErr.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("service error code = %q, want %q", svcErr.Code, "INVALID_ARGUMENT")
+	}
+	if !strings.Contains(svcErr.Message, "name:") || !strings.Contains(svcErr.Message, "reserved") {
+		t.Fatalf("service error message = %q, expected reserved-name hint", svcErr.Message)
+	}
+}
+
 func TestDeleteSubscription_PersistFailureDoesNotMutateRuntimeState(t *testing.T) {
 	dir := t.TempDir()
 	engine, closer, err := state.PersistenceBootstrap(
@@ -1037,6 +1090,67 @@ func TestResetPlatformToDefault_DoesNotDecodeCorruptPersistedFiltersJSON(t *test
 	}
 	if !reflect.DeepEqual(storedResp.RegionFilters, []string{"jp"}) {
 		t.Fatalf("stored region_filters = %v, want %v", storedResp.RegionFilters, []string{"jp"})
+	}
+}
+
+func TestResetPlatformToDefault_InvalidPersistedPlatformNameReturnsInvalidArgument(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	cacheDir := filepath.Join(dir, "cache")
+
+	engine, closer, err := state.PersistenceBootstrap(stateDir, cacheDir)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	platformRow := model.Platform{
+		ID:                     "plat-reset-invalid-name",
+		Name:                   "valid-name",
+		StickyTTLNs:            int64(time.Hour),
+		RegexFilters:           []string{},
+		RegionFilters:          []string{},
+		ReverseProxyMissAction: "TREAT_AS_EMPTY",
+		AllocationPolicy:       "BALANCED",
+		UpdatedAtNs:            time.Now().UnixNano(),
+	}
+	if err := engine.UpsertPlatform(platformRow); err != nil {
+		t.Fatalf("UpsertPlatform: %v", err)
+	}
+
+	db, err := state.OpenDB(filepath.Join(stateDir, "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB(state.db): %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE platforms SET name = ? WHERE id = ?`, "bad:name", platformRow.ID); err != nil {
+		t.Fatalf("corrupt platform name row: %v", err)
+	}
+
+	cp := &ControlPlaneService{
+		Engine: engine,
+		EnvCfg: &config.EnvConfig{
+			DefaultPlatformStickyTTL:              45 * time.Minute,
+			DefaultPlatformRegexFilters:           []string{"^prod-"},
+			DefaultPlatformRegionFilters:          []string{"jp"},
+			DefaultPlatformReverseProxyMissAction: "REJECT",
+			DefaultPlatformAllocationPolicy:       "PREFER_IDLE_IP",
+		},
+	}
+
+	_, err = cp.ResetPlatformToDefault(platformRow.ID)
+	if err == nil {
+		t.Fatal("expected ResetPlatformToDefault to fail for invalid persisted platform name")
+	}
+	var svcErr *ServiceError
+	if !errors.As(err, &svcErr) {
+		t.Fatalf("expected ServiceError, got %T: %v", err, err)
+	}
+	if svcErr.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("service error code = %q, want %q", svcErr.Code, "INVALID_ARGUMENT")
+	}
+	if !strings.Contains(svcErr.Message, "name:") {
+		t.Fatalf("service error message = %q, expected to mention name", svcErr.Message)
 	}
 }
 

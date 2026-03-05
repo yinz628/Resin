@@ -50,6 +50,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if warning := authVersionStartupWarning(envCfg.AuthVersion); warning != "" {
+		startupWarnf("%s", warning)
+	}
 
 	engine, dbCloser, err := state.PersistenceBootstrap(envCfg.StateDir, envCfg.CacheDir)
 	if err != nil {
@@ -402,6 +405,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 
 	forwardProxy := proxy.NewForwardProxy(proxy.ForwardProxyConfig{
 		ProxyToken:        a.envCfg.ProxyToken,
+		AuthVersion:       string(a.envCfg.AuthVersion),
 		Router:            a.topoRuntime.router,
 		Pool:              a.topoRuntime.pool,
 		Health:            a.topoRuntime.pool,
@@ -413,6 +417,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 
 	reverseProxy := proxy.NewReverseProxy(proxy.ReverseProxyConfig{
 		ProxyToken:        a.envCfg.ProxyToken,
+		AuthVersion:       string(a.envCfg.AuthVersion),
 		Router:            a.topoRuntime.router,
 		Pool:              a.topoRuntime.pool,
 		PlatformLookup:    a.topoRuntime.pool,

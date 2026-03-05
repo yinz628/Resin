@@ -59,6 +59,7 @@ services:
     container_name: resin
     restart: unless-stopped
     environment:
+      RESIN_AUTH_VERSION: "V1" # 必填：LEGACY_V0 或 V1
       RESIN_ADMIN_TOKEN: "admin123" # 修改为你的管理后台密码
       RESIN_PROXY_TOKEN: "my-token" # 修改为你的代理密码
       RESIN_LISTEN_ADDRESS: 0.0.0.0
@@ -87,20 +88,20 @@ services:
 
 ### 简单接入代理
 如果你只需要一个高性能、大容量、且会自动健康管理的通用代理池，Resin 开箱即用。
-启动 Resin 服务后，给你的应用程序接入 `http://<RESIN_PROXY_TOKEN>::@127.0.0.1:2260` 代理即可。  
+启动 Resin 服务后，给你的应用程序接入 `http://127.0.0.1:2260` 代理即可。  
 如果你不想设置代理密码，请将环境变量显式设为空字符串：`RESIN_PROXY_TOKEN=""`（变量必须定义）。此时可直接接入 `http://127.0.0.1:2260`。下面是使用 curl 的一个例子：
 
 
 ```bash
 curl -x http://127.0.0.1:2260 \
-  -U "my-token::" \
+  -U ":my-token" \
   https://api.ipify.org
 ```
 
-如果你的客户端支持修改服务的 `BASE_URL`，你也可以尝试反向代理接入。URL 格式为：`/令牌/Platform(可选):/协议/目标地址`。例如，你可以通过下面的 curl 命令通过 Resin 访问 `https://api.ipify.org`。
+如果你的客户端支持修改服务的 `BASE_URL`，你也可以尝试反向代理接入。URL 格式为：`/令牌/Platform(可选).Account(可选)/协议/目标地址`。例如，你可以通过下面的 curl 命令通过 Resin 访问 `https://api.ipify.org`。
 
 ```bash
-curl http://127.0.0.1:2260/my-token/:/https/api.ipify.org
+curl http://127.0.0.1:2260/my-token/./https/api.ipify.org
 ```
 
 > 正向代理与反向代理的选择：如果条件允许，推荐尽量使用反向代理，对于可观测性更友好。如果您的客户端不支持修改 BaseURL，或者客户端需要 utls、非纯 WebAPI 请求这种反向代理不擅长的情况，请使用正向代理。
@@ -118,14 +119,14 @@ hk
 
 ```bash
 curl -x http://127.0.0.1:2260 \
-  -U "my-token:MyPlatform:" \
+  -U "MyPlatform:my-token" \
   https://api.ipify.org
 ```
 
 对于反向代理，你可以在 URL 前缀中提供 Platform 信息。下面是一个使用 curl 的例子：
 
 ```
-curl http://127.0.0.1:2260/my-token/MyPlatform:/https/api.ipify.org
+curl http://127.0.0.1:2260/my-token/MyPlatform/https/api.ipify.org
 ```
 
 ## 🔌 支持协议与订阅格式
@@ -168,35 +169,48 @@ curl http://127.0.0.1:2260/my-token/MyPlatform:/https/api.ipify.org
 - **账号 (Account)**：业务侧的唯一标识（如 `Tom` 或 `user_1`）。携带特定 Account 的请求，Resin 会优先为其分配稳定的出口节点；当节点不可用时，会重试并优先切换到同 IP 节点，以降低业务侧适配成本。
 
 ### 粘性代理接入格式
-无论使用何种接入协议，认证身份的核心格式均为：`RESIN_PROXY_TOKEN:Platform:Account`。想要激活粘性路由，只需在最后加上 `Account` 即可。
 
 #### 方式一：正向代理接入 (HTTP Proxy)
+当 `RESIN_AUTH_VERSION=V1` 时，认证身份核心格式为：`Platform.Account:RESIN_PROXY_TOKEN`。  
+
+> 如需旧格式，可设置 `RESIN_AUTH_VERSION=LEGACY_V0`，继续使用 `RESIN_PROXY_TOKEN:Platform:Account`。  
+
 直接将身份信息写入 Proxy Auth（代理用户名）中：
 
 ```bash
-# 格式：-U "密码:平台:账号"
 # 指定一个业务账号 user_tom，Resin 会为其长期分配一个稳定的专属 IP
 curl -x http://127.0.0.1:2260 \
-  -U "my-token:Default:user_tom" \
+  -U "Default.user_tom:my-token" \
   https://api.ipify.org
 ```
 
-#### 方式二：反向代理接入 (Reverse Proxy)
+#### 方式二：反向代理接入（URL 携带 Account，适合简单使用/手动调试）
 你可以通过替换业务的 BaseURL 为 Resin 反代地址，将请求直接发给 Resin。
-URL 格式进阶为：`http://部署IP:2260/密码/平台:账号/协议/目标地址`：
+URL 格式进阶为：`http://部署IP:2260/密码/平台.账号/协议/目标地址`：
 
 ```bash
 # 例如让 user_tom 访问 https 协议的 cloudflare.com：
-curl "http://127.0.0.1:2260/my-token/Default:user_tom/https/api.ipify.org"
+curl "http://127.0.0.1:2260/my-token/Default.user_tom/https/api.ipify.org"
 ```
 
-#### 方式三：反向代理接入 + 请求头规则（零侵入方案）
+> URL 中携带 Account 的模式定位是“简单使用 / 手动调试”。
+> 生产环境长期集成，推荐优先使用请求头 `X-Resin-Account` 传递 Account。
 
-如果你的客户端（或 SDK）非常死板，**不支持在反向代理 URL 里动态拼 `Account`**，怎么办？
+#### 方式三：反向代理接入 + 请求头（推荐正式集成）
 
-只要你的业务请求本身携带了某种身份凭证（例如发给目标网站的 API Key、Token、Cookie 等），Resin 就可以复用这些业务请求头，从中自动提取 Account。
+如果你的客户端（或 SDK）支持自定义请求头，建议直接使用 `X-Resin-Account` 显式传递 Account，这是最稳定的方式。
 
-**这意味着业务侧通常只需要改一个静态的 `BaseURL`，通常无需改动核心业务逻辑代码。**
+Account 来源优先级如下：  
+`X-Resin-Account` 请求头 > 反向代理 URL 中的 Account > 请求头提取规则。
+
+示例：
+
+```bash
+curl "http://127.0.0.1:2260/my-token/MyPlatform/https/api.example.com/v1/orders" \
+  -H "X-Resin-Account: user_tom"
+```
+
+如果你的客户端不方便设置 `X-Resin-Account`，但业务请求本身已经有稳定身份头（例如发给目标网站的 API Key、Token、Cookie 等），Resin 也可以通过“请求头提取规则”自动提取 Account。
 
 假设你的服务本来每次请求目标 API 时，都会携带 `Authorization` 请求头：
 
@@ -206,15 +220,15 @@ curl "http://127.0.0.1:2260/my-token/Default:user_tom/https/api.ipify.org"
 此时，就算你在反向代理 URL 里不填 `Account`，Resin 也会在流量经过时读取并解析该 Header。例如：
 
 ```bash
-curl "http://127.0.0.1:2260/my-token/MyPlatform:/https/api.example.com/v1/orders" \
+curl "http://127.0.0.1:2260/my-token/MyPlatform/https/api.example.com/v1/orders" \
   -H "Authorization: sk-abc123"
 ```
 
 上面的请求中，Resin 发现 sk-abc123 后，会将其作为 Account。后续只要带着同一把 API Key 的请求，会优先保持在同一个出口 IP 上。
 
-> [!IMPORTANT]
 > 请仅在具备合法处理依据（如用户授权、合同约定或其他适用法律基础）时启用请求头提取，并确保你的日志留存与访问控制策略符合所在地法律法规及目标服务条款。
 
+> [!TIP]
 > 除了 Platform 请求头配置外，Resin 还支持更高级的根据 URL 前缀决定请求头的高级功能！尝试把当前文档与 [DESIGN.md](DESIGN.md) 扔给 AI，问它 “请使用简单易懂的语言，向我介绍 Resin 指定请求头提取规则的两种方式，尤其是根据 URL 前缀决定请求头的方式。”
 
 ---
@@ -234,8 +248,8 @@ curl "http://127.0.0.1:2260/my-token/MyPlatform:/https/api.example.com/v1/orders
 
 | 接入方式 | 代码侵入程度 | 说明 |
 | :--- | :--- | :--- |
-| 接入正向代理 | 🟡 **中侵入** | 需稍微修改代码：为不同用户的请求附带不同认证信息（如 `密码:平台:账号`）。 |
-| 接入反向代理 | 🟡 **中侵入** | 需稍微修改代码：动态拼接带有账号的反代 URL 路径。 |
+| 接入正向代理 | 🟡 **中侵入** | 需稍微修改代码：为不同用户附带不同认证信息（V1 例如 `平台.账号:密码`）。 |
+| 接入反向代理 | 🟡 **中侵入** | 需稍微修改代码：加入 `X-Resin-Account` 请求头或动态拼接带有账号的反代 URL 路径。 |
 | 接入反向代理 + 请求头规则 | 🟢 **零/低侵入** | Resin 允许通过识别业务原始头（如 `Authorization`）自动提取 Account 并进行粘性路由绑定，接入方式与非粘性反代接近。 |
 
 👉 **极速集成脚本/提示词（Prompt）：**  
@@ -253,6 +267,7 @@ curl "http://127.0.0.1:2260/my-token/MyPlatform:/https/api.example.com/v1/orders
 
 ```bash
 RESIN_ADMIN_TOKEN=【管理面板密码】 \
+RESIN_AUTH_VERSION=V1 \
 RESIN_PROXY_TOKEN=【代理密码】 \
 RESIN_STATE_DIR=./data/state \
 RESIN_CACHE_DIR=./data/cache \
@@ -282,6 +297,7 @@ go build -tags "with_quic with_wireguard with_grpc with_utls" -o resin ./cmd/res
 
 # 4. 运行程序
 RESIN_ADMIN_TOKEN=【管理面板密码】 \
+RESIN_AUTH_VERSION=V1 \
 RESIN_PROXY_TOKEN=【代理密码】 \
 RESIN_STATE_DIR=./data/state \
 RESIN_CACHE_DIR=./data/cache \
@@ -298,6 +314,8 @@ RESIN_PORT=2260 \
 
 - **Q: 启动失败提示 `RESIN_PROXY_TOKEN` 未定义？**
   - **A**: 就算你不打算启用代理密码，也必须显式配置它为空：`RESIN_PROXY_TOKEN=""`。
+- **Q: 启动失败提示 `RESIN_AUTH_VERSION` 未定义？**
+  - **A**: 请设置为 `LEGACY_V0` 或 `V1`。新用户设置成 V1 即可。有旧数据的老用户可以参考[迁移指南](doc/v1.0.0-migration-guide.md)。
 - **Q: 使用反向代理 WebSocket 协议（如 ws/wss）怎么写路径？**
   - **A**: 目标无论是不是 ws/wss，URL 路径里的协议字段**依然只能写 `http` 或 `https`**（不能写 ws/wss）。Resin 会自动探测并完成 WebSocket 协议升级（Upgrade）。
 

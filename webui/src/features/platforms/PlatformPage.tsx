@@ -25,7 +25,13 @@ import {
   missActionLabel,
   missActions,
 } from "./constants";
-import { defaultPlatformFormValues, platformFormSchema, toPlatformCreateInput, type PlatformFormValues } from "./formModel";
+import {
+  defaultPlatformFormValues,
+  platformFormSchema,
+  platformNameRuleHint,
+  toPlatformCreateInput,
+  type PlatformFormValues,
+} from "./formModel";
 import type { Platform } from "./types";
 
 const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
@@ -42,6 +48,13 @@ export function PlatformPage() {
   const { toasts, showToast, dismissToast } = useToast();
 
   const queryClient = useQueryClient();
+  const formatPlatformMutationError = (error: unknown) => {
+    const base = formatApiErrorMessage(error, t);
+    if (base.includes("name:")) {
+      return `${base}；${t(platformNameRuleHint)}`;
+    }
+    return base;
+  };
 
   const platformsQuery = useQuery({
     queryKey: ["platforms", "page", page, pageSize, search],
@@ -77,7 +90,7 @@ export function PlatformPage() {
       navigate(`/platforms/${created.id}`);
     },
     onError: (error) => {
-      showToast("error", formatApiErrorMessage(error, t));
+      showToast("error", formatPlatformMutationError(error));
     },
   });
 
@@ -235,6 +248,9 @@ export function PlatformPage() {
                 {createForm.formState.errors.name?.message ? (
                   <p className="field-error">{t(createForm.formState.errors.name.message)}</p>
                 ) : null}
+                <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                  {t(platformNameRuleHint)}
+                </p>
               </div>
 
               <div className="field-group">

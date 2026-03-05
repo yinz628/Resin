@@ -324,6 +324,98 @@ func TestForwardProxy_Authentication_BasicSchemeCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestForwardProxy_Authentication_V1(t *testing.T) {
+	rawCredential := func(raw string) string {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(raw))
+	}
+
+	fp := &ForwardProxy{token: "tok", authVersion: "V1", events: NoOpEventEmitter{}}
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.Header.Set("Proxy-Authorization", rawCredential("plat.user:tok"))
+
+	plat, acct, err := fp.authenticate(req)
+	if err != nil {
+		t.Fatalf("unexpected auth error: %v", err)
+	}
+	if plat != "plat" || acct != "user" {
+		t.Fatalf("got plat=%q acct=%q, want plat=%q acct=%q", plat, acct, "plat", "user")
+	}
+}
+
+func TestForwardProxy_Authentication_V1RejectsLegacyCredentialShape(t *testing.T) {
+	fp := &ForwardProxy{token: "tok", authVersion: "V1", events: NoOpEventEmitter{}}
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.Header.Set("Proxy-Authorization", basicAuth("tok", "plat:acct"))
+
+	_, _, err := fp.authenticate(req)
+	if err != ErrAuthFailed {
+		t.Fatalf("expected ErrAuthFailed, got %v", err)
+	}
+}
+
+func TestForwardProxy_Authentication_V1_NoProxyTokenStillAllowsOptionalIdentity(t *testing.T) {
+	rawCredential := func(raw string) string {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(raw))
+	}
+
+	fp := &ForwardProxy{token: "", authVersion: "V1", events: NoOpEventEmitter{}}
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.Header.Set("Proxy-Authorization", rawCredential("my-platform.account-a:any-token"))
+
+	plat, acct, err := fp.authenticate(req)
+	if err != nil {
+		t.Fatalf("unexpected auth error: %v", err)
+	}
+	if plat != "my-platform" || acct != "account-a" {
+		t.Fatalf("got plat=%q acct=%q, want plat=%q acct=%q", plat, acct, "my-platform", "account-a")
+	}
+}
+
+func TestForwardProxy_Authentication_V1_NoProxyTokenPreservesLegacyShapes(t *testing.T) {
+	fp := &ForwardProxy{token: "", authVersion: "V1", events: NoOpEventEmitter{}}
+
+	tests := []struct {
+		name     string
+		auth     string
+		wantPlat string
+		wantAcct string
+	}{
+		{
+			name:     "two_field_identity",
+			auth:     basicAuth("legacy-plat", "legacy-acct"),
+			wantPlat: "legacy-plat",
+			wantAcct: "legacy-acct",
+		},
+		{
+			name:     "three_field_legacy_shape",
+			auth:     "Basic " + base64.StdEncoding.EncodeToString([]byte("legacy-token:legacy-plat:legacy-acct")),
+			wantPlat: "legacy-plat",
+			wantAcct: "legacy-acct",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://example.com/", nil)
+			req.Header.Set("Proxy-Authorization", tt.auth)
+
+			plat, acct, err := fp.authenticate(req)
+			if err != nil {
+				t.Fatalf("unexpected auth error: %v", err)
+			}
+			if plat != tt.wantPlat || acct != tt.wantAcct {
+				t.Fatalf(
+					"got plat=%q acct=%q, want plat=%q acct=%q",
+					plat,
+					acct,
+					tt.wantPlat,
+					tt.wantAcct,
+				)
+			}
+		})
+	}
+}
+
 func TestForwardProxy_StripHopByHopHeaders(t *testing.T) {
 	header := http.Header{}
 	header.Set("Proxy-Authorization", "Basic xxx")
@@ -672,6 +764,25 @@ func TestReverseParsePath_NoAccount(t *testing.T) {
 	}
 }
 
+func TestReverseParsePath_V1_AcceptsIdentityWithoutColon(t *testing.T) {
+	rp := &ReverseProxy{token: "tok", authVersion: "V1", events: NoOpEventEmitter{}}
+	parsed, err := rp.parsePath("/tok/myplat/https/example.com/path")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if parsed.PlatformName != "myplat" || parsed.Account != "" {
+		t.Fatalf("got plat=%q acct=%q, want plat=%q acct=%q", parsed.PlatformName, parsed.Account, "myplat", "")
+	}
+}
+
+func TestReverseParsePath_LegacyRejectsIdentityWithoutColon(t *testing.T) {
+	rp := &ReverseProxy{token: "tok", authVersion: "LEGACY_V0", events: NoOpEventEmitter{}}
+	_, err := rp.parsePath("/tok/myplat/https/example.com/path")
+	if err != ErrURLParseError {
+		t.Fatalf("expected URL_PARSE_ERROR, got %v", err)
+	}
+}
+
 func TestReverseParsePath_PreservesEscapedPathForUpstream(t *testing.T) {
 	rp := &ReverseProxy{token: "tok", events: NoOpEventEmitter{}}
 	parsed, err := rp.parsePath("/tok/myplat:acct/https/example.com/v1/users/team%2Fa/profile")
@@ -778,6 +889,28 @@ func TestReverseProxy_ResolveReverseProxyAccount_BehaviorRandom(t *testing.T) {
 	}
 	if extractionFailed {
 		t.Fatal("random behavior should not mark extraction failure")
+	}
+}
+
+func TestReverseProxy_ResolveReverseProxyAccount_XResinAccountHeaderTakesPriority(t *testing.T) {
+	rp := &ReverseProxy{}
+	plat := &platform.Platform{
+		ReverseProxyEmptyAccountBehavior: string(platform.ReverseProxyEmptyAccountBehaviorRandom),
+	}
+	parsed := &parsedPath{Host: "example.com", Path: "v1/users", Account: "acct-from-url"}
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.Header.Set("X-Resin-Account", "acct-from-header")
+	req.Header.Set("Authorization", "acct-from-rule")
+
+	account, behavior, extractionFailed := rp.resolveReverseProxyAccount(parsed, req, plat)
+	if behavior != platform.ReverseProxyEmptyAccountBehaviorRandom {
+		t.Fatalf("behavior: got %q, want %q", behavior, platform.ReverseProxyEmptyAccountBehaviorRandom)
+	}
+	if account != "acct-from-header" {
+		t.Fatalf("account: got %q, want %q", account, "acct-from-header")
+	}
+	if extractionFailed {
+		t.Fatal("header-provided account should not mark extraction as failed")
 	}
 }
 
@@ -1292,6 +1425,7 @@ func TestCopyEndToEndHeaders_StripsHopByHop(t *testing.T) {
 func TestStripForwardingIdentityHeaders(t *testing.T) {
 	header := http.Header{}
 	header.Set("Forwarded", "for=1.2.3.4;proto=https")
+	header.Set("X-Resin-Account", "debug-account")
 	header.Set("X-Forwarded-For", "1.2.3.4")
 	header.Set("X-Forwarded-Host", "origin.example.com")
 	header.Set("X-Forwarded-Proto", "https")
@@ -1308,7 +1442,7 @@ func TestStripForwardingIdentityHeaders(t *testing.T) {
 	stripForwardingIdentityHeaders(header)
 
 	for _, h := range []string{
-		"Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto",
+		"X-Resin-Account", "Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto",
 		"X-Forwarded-Port", "X-Forwarded-Server", "Via",
 		"X-Real-IP", "X-Client-IP", "True-Client-IP",
 		"CF-Connecting-IP", "X-ProxyUser-Ip",

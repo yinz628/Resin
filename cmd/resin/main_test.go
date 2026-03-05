@@ -35,6 +35,7 @@ func newBootstrapTestRuntime(runtimeCfg *config.RuntimeConfig) (*topology.Subscr
 
 func newDefaultPlatformEnvConfig() *config.EnvConfig {
 	return &config.EnvConfig{
+		AuthVersion:                                     config.AuthVersionLegacyV0,
 		DefaultPlatformStickyTTL:                        7 * 24 * time.Hour,
 		DefaultPlatformRegexFilters:                     []string{},
 		DefaultPlatformRegionFilters:                    []string{},
@@ -42,6 +43,26 @@ func newDefaultPlatformEnvConfig() *config.EnvConfig {
 		DefaultPlatformReverseProxyEmptyAccountBehavior: "ACCOUNT_HEADER_RULE",
 		DefaultPlatformReverseProxyFixedAccountHeader:   "Authorization",
 		DefaultPlatformAllocationPolicy:                 "BALANCED",
+	}
+}
+
+func TestAuthVersionStartupWarning_LegacyV0(t *testing.T) {
+	msg := authVersionStartupWarning(config.AuthVersionLegacyV0)
+	if msg == "" {
+		t.Fatal("expected warning message for LEGACY_V0")
+	}
+	if !strings.Contains(msg, "RESIN_AUTH_VERSION=LEGACY_V0") {
+		t.Fatalf("warning message should mention LEGACY_V0, got: %q", msg)
+	}
+	if !strings.Contains(msg, config.AuthMigrationGuideURL) {
+		t.Fatalf("warning message should mention migration guide, got: %q", msg)
+	}
+}
+
+func TestAuthVersionStartupWarning_V1(t *testing.T) {
+	msg := authVersionStartupWarning(config.AuthVersionV1)
+	if msg != "" {
+		t.Fatalf("expected empty warning for V1, got: %q", msg)
 	}
 }
 
@@ -291,6 +312,232 @@ func TestBootstrapTopology_FailsFastOnCorruptPlatformFilters(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "regex_filters") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBootstrapTopology_V1RejectsPersistedInvalidPlatformName(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	cacheDir := filepath.Join(root, "cache")
+
+	engine, closer, err := state.PersistenceBootstrap(stateDir, cacheDir)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	now := time.Now().UnixNano()
+	if err := engine.UpsertPlatform(model.Platform{
+		ID:                     "plat-1",
+		Name:                   "LegacyPlatform",
+		StickyTTLNs:            int64(time.Hour),
+		RegexFilters:           []string{},
+		RegionFilters:          []string{},
+		ReverseProxyMissAction: "TREAT_AS_EMPTY",
+		AllocationPolicy:       "BALANCED",
+		UpdatedAtNs:            now,
+	}); err != nil {
+		t.Fatalf("UpsertPlatform: %v", err)
+	}
+
+	db, err := state.OpenDB(filepath.Join(stateDir, "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB(state.db): %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE platforms SET name = ? WHERE id = ?`, "legacy:bad", "plat-1"); err != nil {
+		t.Fatalf("corrupt platform name row: %v", err)
+	}
+
+	subManager, pool := newBootstrapTestRuntime(config.NewDefaultRuntimeConfig())
+	envCfg := newDefaultPlatformEnvConfig()
+	envCfg.AuthVersion = config.AuthVersionV1
+
+	err = bootstrapTopology(engine, subManager, pool, envCfg)
+	if err == nil {
+		t.Fatal("expected bootstrapTopology to fail when V1 detects invalid persisted platform name")
+	}
+	if !strings.Contains(err.Error(), "RESIN_AUTH_VERSION=V1") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), config.AuthMigrationGuideURL) {
+		t.Fatalf("expected migration guide link in error, got: %v", err)
+	}
+}
+
+func TestBootstrapTopology_V1RejectsPersistedPlatformNameWithLeadingSpace(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	cacheDir := filepath.Join(root, "cache")
+
+	engine, closer, err := state.PersistenceBootstrap(stateDir, cacheDir)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	now := time.Now().UnixNano()
+	if err := engine.UpsertPlatform(model.Platform{
+		ID:                     "plat-1",
+		Name:                   "LegacyPlatform",
+		StickyTTLNs:            int64(time.Hour),
+		RegexFilters:           []string{},
+		RegionFilters:          []string{},
+		ReverseProxyMissAction: "TREAT_AS_EMPTY",
+		AllocationPolicy:       "BALANCED",
+		UpdatedAtNs:            now,
+	}); err != nil {
+		t.Fatalf("UpsertPlatform: %v", err)
+	}
+
+	db, err := state.OpenDB(filepath.Join(stateDir, "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB(state.db): %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE platforms SET name = ? WHERE id = ?`, " legacy-space", "plat-1"); err != nil {
+		t.Fatalf("corrupt platform name row: %v", err)
+	}
+
+	subManager, pool := newBootstrapTestRuntime(config.NewDefaultRuntimeConfig())
+	envCfg := newDefaultPlatformEnvConfig()
+	envCfg.AuthVersion = config.AuthVersionV1
+
+	err = bootstrapTopology(engine, subManager, pool, envCfg)
+	if err == nil {
+		t.Fatal("expected bootstrapTopology to fail when V1 detects leading space in persisted platform name")
+	}
+	if !strings.Contains(err.Error(), "RESIN_AUTH_VERSION=V1") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), config.AuthMigrationGuideURL) {
+		t.Fatalf("expected migration guide link in error, got: %v", err)
+	}
+}
+
+func TestBootstrapTopology_V1RejectsPersistedReservedPlatformNameAPI(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	cacheDir := filepath.Join(root, "cache")
+
+	engine, closer, err := state.PersistenceBootstrap(stateDir, cacheDir)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	now := time.Now().UnixNano()
+	if err := engine.UpsertPlatform(model.Platform{
+		ID:                     "plat-1",
+		Name:                   "LegacyPlatform",
+		StickyTTLNs:            int64(time.Hour),
+		RegexFilters:           []string{},
+		RegionFilters:          []string{},
+		ReverseProxyMissAction: "TREAT_AS_EMPTY",
+		AllocationPolicy:       "BALANCED",
+		UpdatedAtNs:            now,
+	}); err != nil {
+		t.Fatalf("UpsertPlatform: %v", err)
+	}
+
+	db, err := state.OpenDB(filepath.Join(stateDir, "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB(state.db): %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE platforms SET name = ? WHERE id = ?`, "api", "plat-1"); err != nil {
+		t.Fatalf("corrupt platform name row: %v", err)
+	}
+
+	subManager, pool := newBootstrapTestRuntime(config.NewDefaultRuntimeConfig())
+	envCfg := newDefaultPlatformEnvConfig()
+	envCfg.AuthVersion = config.AuthVersionV1
+
+	err = bootstrapTopology(engine, subManager, pool, envCfg)
+	if err == nil {
+		t.Fatal("expected bootstrapTopology to fail when V1 detects reserved platform name api")
+	}
+	if !strings.Contains(err.Error(), "RESIN_AUTH_VERSION=V1") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), config.AuthMigrationGuideURL) {
+		t.Fatalf("expected migration guide link in error, got: %v", err)
+	}
+}
+
+func TestBootstrapTopology_V1RejectsAllPersistedInvalidPlatformNames(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	cacheDir := filepath.Join(root, "cache")
+
+	engine, closer, err := state.PersistenceBootstrap(stateDir, cacheDir)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	now := time.Now().UnixNano()
+	for _, p := range []model.Platform{
+		{
+			ID:                     "plat-1",
+			Name:                   "LegacyPlatformOne",
+			StickyTTLNs:            int64(time.Hour),
+			RegexFilters:           []string{},
+			RegionFilters:          []string{},
+			ReverseProxyMissAction: "TREAT_AS_EMPTY",
+			AllocationPolicy:       "BALANCED",
+			UpdatedAtNs:            now,
+		},
+		{
+			ID:                     "plat-2",
+			Name:                   "LegacyPlatformTwo",
+			StickyTTLNs:            int64(time.Hour),
+			RegexFilters:           []string{},
+			RegionFilters:          []string{},
+			ReverseProxyMissAction: "TREAT_AS_EMPTY",
+			AllocationPolicy:       "BALANCED",
+			UpdatedAtNs:            now,
+		},
+	} {
+		if err := engine.UpsertPlatform(p); err != nil {
+			t.Fatalf("UpsertPlatform(%s): %v", p.ID, err)
+		}
+	}
+
+	db, err := state.OpenDB(filepath.Join(stateDir, "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB(state.db): %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE platforms SET name = ? WHERE id = ?`, "legacy:bad-one", "plat-1"); err != nil {
+		t.Fatalf("corrupt platform name row (plat-1): %v", err)
+	}
+	if _, err := db.Exec(`UPDATE platforms SET name = ? WHERE id = ?`, "api", "plat-2"); err != nil {
+		t.Fatalf("corrupt platform name row (plat-2): %v", err)
+	}
+
+	subManager, pool := newBootstrapTestRuntime(config.NewDefaultRuntimeConfig())
+	envCfg := newDefaultPlatformEnvConfig()
+	envCfg.AuthVersion = config.AuthVersionV1
+
+	err = bootstrapTopology(engine, subManager, pool, envCfg)
+	if err == nil {
+		t.Fatal("expected bootstrapTopology to fail when V1 detects multiple invalid persisted platform names")
+	}
+	if !strings.Contains(err.Error(), "2 platform(s) are incompatible with RESIN_AUTH_VERSION=V1") {
+		t.Fatalf("unexpected error summary: %v", err)
+	}
+	if !strings.Contains(err.Error(), "\"legacy:bad-one\"") || !strings.Contains(err.Error(), "\"api\"") {
+		t.Fatalf("expected all invalid platform names in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Platform name rules:") {
+		t.Fatalf("expected platform-name rules in error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "\"legacy:bad-one\":") || strings.Contains(err.Error(), "\"api\":") {
+		t.Fatalf("error should list invalid platform names without per-platform reason details, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), config.AuthMigrationGuideURL) {
+		t.Fatalf("expected migration guide link in error, got: %v", err)
 	}
 }
 

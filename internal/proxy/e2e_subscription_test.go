@@ -206,6 +206,9 @@ func TestReverseProxy_E2EServer_FromHTTPSubscription(t *testing.T) {
 		if got := r.Header.Get("X-Forwarded-For"); got != "" {
 			t.Fatalf("X-Forwarded-For should be stripped, got %q", got)
 		}
+		if got := r.Header.Get("X-Resin-Account"); got != "" {
+			t.Fatalf("X-Resin-Account should be stripped, got %q", got)
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("reverse-e2e-subscription"))
 	}))
@@ -225,7 +228,12 @@ func TestReverseProxy_E2EServer_FromHTTPSubscription(t *testing.T) {
 	host := strings.TrimPrefix(upstream.URL, "http://")
 	reqURL := reverseSrv.URL + "/tok/plat:acct/http/" + host + "/api/v1/items?k=v"
 
-	resp, err := http.Get(reqURL)
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		t.Fatalf("build reverse request: %v", err)
+	}
+	req.Header.Set("X-Resin-Account", "debug-only-account")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("reverse request failed: %v", err)
 	}

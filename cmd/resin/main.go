@@ -51,8 +51,47 @@ func main() {
 }
 
 func fatalf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "fatal: "+format+"\n", args...)
+	message := fmt.Sprintf(format, args...)
+	if supportsANSIColorOnStderr() {
+		fmt.Fprintf(os.Stderr, "\x1b[31mfatal:\x1b[0m %s\n", message)
+	} else {
+		fmt.Fprintf(os.Stderr, "fatal: %s\n", message)
+	}
 	os.Exit(1)
+}
+
+func supportsANSIColorOnStderr() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	term := os.Getenv("TERM")
+	if term == "" || term == "dumb" {
+		return false
+	}
+	stat, err := os.Stderr.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
+func startupWarnf(format string, args ...any) {
+	message := fmt.Sprintf(format, args...)
+	if supportsANSIColorOnStderr() {
+		fmt.Fprintf(os.Stderr, "\x1b[33mwarning:\x1b[0m %s\n", message)
+	} else {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", message)
+	}
+}
+
+func authVersionStartupWarning(authVersion config.AuthVersion) string {
+	if authVersion != config.AuthVersionLegacyV0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"RESIN_AUTH_VERSION=LEGACY_V0 enables legacy auth compatibility and will be removed in a future release. Migrate to V1. Migration guide: %s",
+		config.AuthMigrationGuideURL,
+	)
 }
 
 func loadRuntimeConfig(engine *state.StateEngine) *config.RuntimeConfig {
@@ -351,6 +390,11 @@ func bootstrapTopology(
 	if err != nil {
 		return fmt.Errorf("load platforms: %w", err)
 	}
+	if envCfg != nil && envCfg.AuthVersion == config.AuthVersionV1 {
+		if err := validatePersistedPlatformNamesForV1(dbPlats); err != nil {
+			return fmt.Errorf("validate platform names for V1: %w", err)
+		}
+	}
 	if err := ensureDefaultPlatform(engine, envCfg, dbPlats); err != nil {
 		return fmt.Errorf("ensure default platform: %w", err)
 	}
@@ -366,6 +410,25 @@ func bootstrapTopology(
 		pool.RegisterPlatform(plat)
 	}
 	log.Printf("Loaded %d platforms from state.db", len(dbPlats))
+	return nil
+}
+
+func validatePersistedPlatformNamesForV1(platformsInDB []model.Platform) error {
+	var invalidPlatformNames []string
+	for _, p := range platformsInDB {
+		if err := platform.ValidatePlatformName(p.Name); err != nil {
+			invalidPlatformNames = append(invalidPlatformNames, fmt.Sprintf("%q", p.Name))
+		}
+	}
+
+	if len(invalidPlatformNames) > 0 {
+		return fmt.Errorf(
+			"%d platform(s) are incompatible with RESIN_AUTH_VERSION=V1: %s. Platform name rules: must be non-empty; must not be reserved name; must not contain any of \".:|/\\\\@?#%%~\"; must not contain spaces, tabs, newlines, or carriage returns. Please rename these platforms; you can temporarily start with RESIN_AUTH_VERSION=LEGACY_V0, rename them, then switch back to V1. Migration guide: %s",
+			len(invalidPlatformNames),
+			strings.Join(invalidPlatformNames, ", "),
+			config.AuthMigrationGuideURL,
+		)
+	}
 	return nil
 }
 

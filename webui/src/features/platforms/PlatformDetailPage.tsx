@@ -27,6 +27,7 @@ import {
 import {
   defaultPlatformFormValues,
   platformFormSchema,
+  platformNameRuleHint,
   platformToFormValues,
   toPlatformUpdateInput,
   type PlatformFormValues,
@@ -49,6 +50,13 @@ export function PlatformDetailPage() {
   const [activeTab, setActiveTab] = useState<PlatformDetailTab>("monitor");
   const { toasts, showToast, dismissToast } = useToast();
   const queryClient = useQueryClient();
+  const formatPlatformMutationError = (error: unknown) => {
+    const base = formatApiErrorMessage(error, t);
+    if (base.includes("name:")) {
+      return `${base}；${t(platformNameRuleHint)}`;
+    }
+    return base;
+  };
 
   const platformQuery = useQuery({
     queryKey: ["platform", platformId],
@@ -94,7 +102,7 @@ export function PlatformDetailPage() {
       showToast("success", t("平台 {{name}} 已更新", { name: updated.name }));
     },
     onError: (error) => {
-      showToast("error", formatApiErrorMessage(error, t));
+      showToast("error", formatPlatformMutationError(error));
     },
   });
 
@@ -111,7 +119,7 @@ export function PlatformDetailPage() {
       showToast("success", t("平台 {{name}} 已重置为默认配置", { name: updated.name }));
     },
     onError: (error) => {
-      showToast("error", formatApiErrorMessage(error, t));
+      showToast("error", formatPlatformMutationError(error));
     },
   });
 
@@ -328,6 +336,9 @@ export function PlatformDetailPage() {
                     {editForm.formState.errors.name?.message ? (
                       <p className="field-error">{t(editForm.formState.errors.name.message)}</p>
                     ) : null}
+                    <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                      {t(platformNameRuleHint)}
+                    </p>
                   </div>
 
                   <div className="field-group">

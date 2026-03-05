@@ -53,8 +53,9 @@ type EnvConfig struct {
 	RequestLogDBRetainCount       int
 
 	// Auth
-	AdminToken string
-	ProxyToken string
+	AuthVersion AuthVersion
+	AdminToken  string
+	ProxyToken  string
 
 	// Metrics
 	MetricThroughputIntervalSeconds   int
@@ -121,8 +122,10 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	cfg.RequestLogDBRetainCount = envInt("RESIN_REQUEST_LOG_DB_RETAIN_COUNT", 5, &errs)
 
 	// --- Auth (must be defined; empty means auth disabled) ---
+	authVersionRaw, hasAuthVersion := os.LookupEnv("RESIN_AUTH_VERSION")
 	adminToken, hasAdminToken := os.LookupEnv("RESIN_ADMIN_TOKEN")
 	proxyToken, hasProxyToken := os.LookupEnv("RESIN_PROXY_TOKEN")
+	cfg.AuthVersion = NormalizeAuthVersion(authVersionRaw)
 	cfg.AdminToken = adminToken
 	cfg.ProxyToken = proxyToken
 
@@ -138,14 +141,59 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	cfg.MetricLatencyBinOverflowMS = envInt("RESIN_METRIC_LATENCY_BIN_OVERFLOW_MS", 3000, &errs)
 
 	// --- Validation ---
+	if !hasAuthVersion {
+		errs = append(
+			errs,
+			fmt.Sprintf(
+				"RESIN_AUTH_VERSION must be defined (allowed: %s, %s). If you are upgrading from an older version, set RESIN_AUTH_VERSION=%s first for compatibility, then migrate and switch to %s. Migration guide: %s",
+				AuthVersionLegacyV0,
+				AuthVersionV1,
+				AuthVersionLegacyV0,
+				AuthVersionV1,
+				AuthMigrationGuideURL,
+			),
+		)
+	} else if cfg.AuthVersion == "" {
+		errs = append(
+			errs,
+			fmt.Sprintf(
+				"RESIN_AUTH_VERSION: invalid value %q (allowed: %s, %s)",
+				authVersionRaw,
+				AuthVersionLegacyV0,
+				AuthVersionV1,
+			),
+		)
+	}
+
 	if !hasAdminToken {
 		errs = append(errs, "RESIN_ADMIN_TOKEN must be defined (can be empty)")
 	}
 	if !hasProxyToken {
 		errs = append(errs, "RESIN_PROXY_TOKEN must be defined (can be empty)")
 	} else {
-		if cfg.ProxyToken != "" && (strings.Contains(cfg.ProxyToken, ":") || strings.Contains(cfg.ProxyToken, "@")) {
-			errs = append(errs, "RESIN_PROXY_TOKEN must not contain ':' or '@'")
+		if cfg.ProxyToken != "" {
+			switch cfg.AuthVersion {
+			case AuthVersionV1:
+				if err := ValidateProxyTokenForV1(cfg.ProxyToken); err != nil {
+					errs = append(
+						errs,
+						fmt.Sprintf(
+							"RESIN_PROXY_TOKEN: %v. For migration, update RESIN_PROXY_TOKEN to a V1-compatible value. Migration guide: %s",
+							err,
+							AuthMigrationGuideURL,
+						),
+					)
+				}
+			case AuthVersionLegacyV0:
+				if strings.Contains(cfg.ProxyToken, ":") || strings.Contains(cfg.ProxyToken, "@") {
+					errs = append(errs, "RESIN_PROXY_TOKEN must not contain ':' or '@' when RESIN_AUTH_VERSION=LEGACY_V0")
+				}
+			default:
+				// Keep validation deterministic even when auth version itself is invalid.
+				if strings.Contains(cfg.ProxyToken, ":") || strings.Contains(cfg.ProxyToken, "@") {
+					errs = append(errs, "RESIN_PROXY_TOKEN must not contain ':' or '@'")
+				}
+			}
 		}
 		if cfg.ProxyToken == "api" || cfg.ProxyToken == "healthz" || cfg.ProxyToken == "ui" {
 			errs = append(errs, "RESIN_PROXY_TOKEN must not be reserved keyword: api, healthz, ui")
@@ -348,4 +396,20 @@ func isLowerAlpha2(s string) bool {
 		}
 	}
 	return true
+}
+
+const (
+	v1ProxyTokenForbiddenChars   = ".:|/\\@?#%~"
+	v1ProxyTokenForbiddenSpacing = " \t\r\n"
+)
+
+// ValidateProxyTokenForV1 validates proxy token constraints used by auth version V1.
+func ValidateProxyTokenForV1(token string) error {
+	if strings.ContainsAny(token, v1ProxyTokenForbiddenChars) {
+		return fmt.Errorf("must not contain any of %q", v1ProxyTokenForbiddenChars)
+	}
+	if strings.ContainsAny(token, v1ProxyTokenForbiddenSpacing) {
+		return fmt.Errorf("must not contain spaces, tabs, newlines, or carriage returns")
+	}
+	return nil
 }
