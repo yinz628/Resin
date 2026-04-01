@@ -225,10 +225,8 @@ func LoadEnvConfig() (*EnvConfig, error) {
 			errs = append(errs, fmt.Sprintf("RESIN_DEFAULT_PLATFORM_REGEX_FILTERS: invalid regex %q: %v", pattern, err))
 		}
 	}
-	for _, region := range cfg.DefaultPlatformRegionFilters {
-		if !isLowerAlpha2(region) {
-			errs = append(errs, fmt.Sprintf("RESIN_DEFAULT_PLATFORM_REGION_FILTERS: invalid region %q (must be lowercase ISO 3166-1 alpha-2)", region))
-		}
+	if err := platform.ValidateRegionFilters(cfg.DefaultPlatformRegionFilters); err != nil {
+		errs = append(errs, fmt.Sprintf("RESIN_DEFAULT_PLATFORM_REGION_FILTERS: %v", err))
 	}
 	normalizedMissAction := platform.NormalizeReverseProxyMissAction(cfg.DefaultPlatformReverseProxyMissAction)
 	if normalizedMissAction == "" {
@@ -387,18 +385,6 @@ func validatePositive(name string, value int, errs *[]string) {
 	if value <= 0 {
 		*errs = append(*errs, fmt.Sprintf("%s: must be positive, got %d", name, value))
 	}
-}
-
-func isLowerAlpha2(s string) bool {
-	if len(s) != 2 {
-		return false
-	}
-	for _, c := range s {
-		if c < 'a' || c > 'z' {
-			return false
-		}
-	}
-	return true
 }
 
 const (

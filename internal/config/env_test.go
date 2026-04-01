@@ -173,6 +173,21 @@ func TestLoadEnvConfig_DefaultPlatformFixedHeaderMultiline(t *testing.T) {
 	)
 }
 
+func TestLoadEnvConfig_DefaultPlatformRegionFilters_Negation(t *testing.T) {
+	envs := requiredEnvs()
+	envs["RESIN_DEFAULT_PLATFORM_REGION_FILTERS"] = `["!hk","us"]`
+	setEnvs(t, envs)
+
+	cfg, err := LoadEnvConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertEqual(t, "DefaultPlatformRegionFiltersLength", len(cfg.DefaultPlatformRegionFilters), 2)
+	assertEqual(t, "DefaultPlatformRegionFilters[0]", cfg.DefaultPlatformRegionFilters[0], "!hk")
+	assertEqual(t, "DefaultPlatformRegionFilters[1]", cfg.DefaultPlatformRegionFilters[1], "us")
+}
+
 func TestLoadEnvConfig_MissingAdminToken(t *testing.T) {
 	t.Setenv("RESIN_AUTH_VERSION", "LEGACY_V0")
 	t.Setenv("RESIN_PROXY_TOKEN", "proxy-secret")

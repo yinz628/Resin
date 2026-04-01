@@ -717,28 +717,17 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 	if s.Pool != nil {
 		subLookup = s.Pool.MakeSubLookup()
 	}
-	var regionFilterSet map[string]struct{}
-	if len(regionFilters) > 0 {
-		regionFilterSet = make(map[string]struct{}, len(regionFilters))
-		for _, rf := range regionFilters {
-			regionFilterSet[rf] = struct{}{}
-		}
-	}
-
 	var result []NodeSummary
 	s.Pool.Range(func(h node.Hash, entry *node.NodeEntry) bool {
 		if !entry.MatchRegexs(regexFilters, subLookup) {
 			return true
 		}
-		if len(regionFilterSet) > 0 {
+		if len(regionFilters) > 0 {
 			region := entry.GetRegion(nil)
 			if s.GeoIP != nil {
 				region = entry.GetRegion(s.GeoIP.Lookup)
 			}
-			if region == "" {
-				return true
-			}
-			if _, ok := regionFilterSet[region]; !ok {
+			if !platform.MatchRegionFilter(region, regionFilters) {
 				return true
 			}
 		}

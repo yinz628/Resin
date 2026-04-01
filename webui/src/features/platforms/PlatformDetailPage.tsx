@@ -438,9 +438,12 @@ export function PlatformDetailPage() {
                     <Textarea
                       id="detail-edit-region"
                       rows={6}
-                      placeholder={t("每行一条，如 hk / us")}
+                      placeholder={t("每行一条，如 hk / us / !hk")}
                       {...editForm.register("region_filters_text")}
                     />
+                    <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                      {t("支持反选：以 ! 开头可排除地区（如 !hk）。可与正选混用，最终结果为“先正选再排除”。")}
+                    </p>
                   </div>
 
                   <div className="platform-config-actions">
