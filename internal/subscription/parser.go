@@ -1315,7 +1315,7 @@ func convertClashProxyToNode(proxy map[string]any) (ParsedNode, bool) {
 			"password":    password,
 			"tls":         tls,
 		}
-		if ports := splitCommaList(firstNonEmpty(getString(proxy, "ports"), getString(proxy, "mport"))); len(ports) > 0 {
+		if ports := normalizeHysteriaPortList(firstNonEmpty(getString(proxy, "ports"), getString(proxy, "mport"))); len(ports) > 0 {
 			outbound["server_ports"] = ports
 		}
 		if upMbps, ok := getUint(proxy, "up", "up-mbps", "up_mbps"); ok {
@@ -1486,7 +1486,7 @@ func convertClashProxyToNode(proxy map[string]any) (ParsedNode, bool) {
 		if obfs := strings.TrimSpace(getString(proxy, "obfs")); obfs != "" {
 			outbound["obfs"] = obfs
 		}
-		if ports := splitCommaList(getString(proxy, "ports")); len(ports) > 0 {
+		if ports := normalizeHysteriaPortList(getString(proxy, "ports")); len(ports) > 0 {
 			outbound["server_ports"] = ports
 		}
 		if recvWindowConn, ok := getUint(proxy, "recv-window-conn", "recv_window_conn"); ok {
@@ -1706,6 +1706,55 @@ func splitCommaList(raw string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeHysteriaPortList(raw string) []string {
+	ports := splitCommaList(raw)
+	if len(ports) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ports))
+	for _, port := range ports {
+		out = append(out, normalizeHysteriaPortRange(port))
+	}
+	return out
+}
+
+func normalizeHysteriaPortRange(raw string) string {
+	portRange := strings.TrimSpace(raw)
+	if portRange == "" || strings.Contains(portRange, ":") {
+		return portRange
+	}
+	compact := strings.ReplaceAll(portRange, " ", "")
+	if strings.Count(compact, "-") != 1 {
+		return portRange
+	}
+	start, end, ok := strings.Cut(compact, "-")
+	if !ok {
+		return portRange
+	}
+	if start != "" && !isDecimalString(start) {
+		return portRange
+	}
+	if end != "" && !isDecimalString(end) {
+		return portRange
+	}
+	if start == "" && end == "" {
+		return portRange
+	}
+	return start + ":" + end
+}
+
+func isDecimalString(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeHysteriaRate(raw string) string {
@@ -3319,7 +3368,7 @@ func parseHysteria2URI(uri string) (ParsedNode, bool) {
 		"password":    password,
 		"tls":         tls,
 	}
-	if ports := splitCommaList(firstNonEmpty(query.Get("ports"), query.Get("mport"))); len(ports) > 0 {
+	if ports := normalizeHysteriaPortList(firstNonEmpty(query.Get("ports"), query.Get("mport"))); len(ports) > 0 {
 		outbound["server_ports"] = ports
 	}
 	if upMbps, ok := parsePositiveUint64(

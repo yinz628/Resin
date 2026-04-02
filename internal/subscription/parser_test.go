@@ -495,7 +495,7 @@ func TestParseGeneralSubscription_ClashJSON_NewProtocolsAndDialFields(t *testing
 		t.Fatalf("hysteria network: got %v", got)
 	}
 	serverPorts := mustSliceField(t, hysteria, "server_ports")
-	if !containsAnyString(serverPorts, "1000") || !containsAnyString(serverPorts, "2000-3000") {
+	if !containsAnyString(serverPorts, "1000") || !containsAnyString(serverPorts, "2000:3000") {
 		t.Fatalf("hysteria server_ports mismatch: %v", serverPorts)
 	}
 
@@ -1660,6 +1660,24 @@ func TestParseGeneralSubscription_HY2URIAliasAndQueryPassword(t *testing.T) {
 	utls := mustMapField(t, tls, "utls")
 	if got := utls["fingerprint"]; got != "chrome" {
 		t.Fatalf("tls.utls.fingerprint: got %v", got)
+	}
+}
+
+func TestParseGeneralSubscription_HY2URIMPortRangeNormalizedToSingBoxFormat(t *testing.T) {
+	data := []byte("hy2://hy2-password@hy2.example.com:20000?sni=hy2.example.com&mport=20000-50000")
+
+	nodes, err := ParseGeneralSubscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 parsed node, got %d", len(nodes))
+	}
+
+	obj := parseNodeRaw(t, nodes[0].RawOptions)
+	serverPorts := mustSliceField(t, obj, "server_ports")
+	if !containsAnyString(serverPorts, "20000:50000") {
+		t.Fatalf("server_ports: got %v", serverPorts)
 	}
 }
 
