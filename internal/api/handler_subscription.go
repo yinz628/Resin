@@ -7,6 +7,10 @@ import (
 	"github.com/Resinat/Resin/internal/service"
 )
 
+type cleanupHighLatencyNodesRequest struct {
+	ThresholdMs int `json:"threshold_ms"`
+}
+
 func subscriptionMatchesKeyword(s service.SubscriptionResponse, keyword string) bool {
 	contains := func(v string) bool {
 		return strings.Contains(strings.ToLower(v), keyword)
@@ -175,5 +179,32 @@ func HandleCleanupSubscriptionCircuitOpenNodes(cp *service.ControlPlaneService) 
 			return
 		}
 		WriteJSON(w, http.StatusOK, map[string]int{"cleaned_count": cleanedCount})
+	}
+}
+
+// HandleCleanupSubscriptionHighLatencyNodes returns a handler for
+// POST /api/v1/subscriptions/{id}/actions/cleanup-high-latency-nodes.
+func HandleCleanupSubscriptionHighLatencyNodes(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := requireUUIDPathParam(w, r, "id", "subscription_id")
+		if !ok {
+			return
+		}
+
+		var req cleanupHighLatencyNodesRequest
+		if err := DecodeBody(r, &req); err != nil {
+			writeDecodeBodyError(w, err)
+			return
+		}
+
+		cleanedCount, err := cp.CleanupSubscriptionHighLatencyNodes(id, req.ThresholdMs)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]int{
+			"cleaned_count": cleanedCount,
+			"threshold_ms":  req.ThresholdMs,
+		})
 	}
 }

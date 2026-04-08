@@ -451,6 +451,12 @@ func (s *ControlPlaneService) CleanupSubscriptionCircuitOpenNodes(id string) (in
 	return s.cleanupSubscriptionCircuitOpenNodesWithHook(id, nil)
 }
 
+// CleanupSubscriptionHighLatencyNodes removes nodes whose reference latency is
+// at or above the configured threshold for the subscription.
+func (s *ControlPlaneService) CleanupSubscriptionHighLatencyNodes(id string, thresholdMs int) (int, error) {
+	return s.cleanupSubscriptionHighLatencyNodesWithHook(id, thresholdMs, nil)
+}
+
 // cleanupSubscriptionCircuitOpenNodesWithHook performs cleanup with an optional
 // hook between first scan and second confirmation scan. The hook is only used
 // by tests to simulate TOCTOU recovery.
@@ -498,9 +504,84 @@ func (s *ControlPlaneService) cleanupSubscriptionCircuitOpenNodesWithHook(
 	return cleanedCount, nil
 }
 
+// cleanupSubscriptionHighLatencyNodesWithHook performs high-latency cleanup
+// with an optional hook between first scan and second confirmation scan.
+func (s *ControlPlaneService) cleanupSubscriptionHighLatencyNodesWithHook(
+	id string,
+	thresholdMs int,
+	betweenScans func(),
+) (int, error) {
+	if err := validateSubscriptionCleanupHighLatencyThreshold(thresholdMs); err != nil {
+		return 0, err
+	}
+
+	sub := s.SubMgr.Lookup(id)
+	if sub == nil {
+		return 0, notFound("subscription not found")
+	}
+
+	var (
+		cleanedCount int
+		evicted      []node.Hash
+		cleanupErr   error
+	)
+
+	sub.WithOpLock(func() {
+		lockedSub := s.SubMgr.Lookup(id)
+		if lockedSub == nil {
+			cleanupErr = notFound("subscription not found")
+			return
+		}
+
+		cleanedCount, evicted = topology.CleanupSubscriptionNodesWithConfirmNoLock(
+			lockedSub,
+			s.Pool,
+			func(entry *node.NodeEntry) bool {
+				return s.shouldCleanupSubscriptionHighLatencyNode(entry, thresholdMs)
+			},
+			betweenScans,
+		)
+	})
+	if cleanupErr != nil {
+		return 0, cleanupErr
+	}
+
+	if s.Engine != nil {
+		for _, h := range evicted {
+			s.Engine.MarkSubscriptionNode(id, h.Hex())
+		}
+	}
+
+	return cleanedCount, nil
+}
+
 func shouldCleanupSubscriptionNode(entry *node.NodeEntry) bool {
 	if entry == nil {
 		return false
 	}
 	return entry.IsCircuitOpen() || (!entry.HasOutbound() && entry.GetLastError() != "")
+}
+
+func validateSubscriptionCleanupHighLatencyThreshold(thresholdMs int) *ServiceError {
+	switch thresholdMs {
+	case 500, 1000, 2000:
+		return nil
+	default:
+		return invalidArg("threshold_ms: must be one of 500, 1000, 2000")
+	}
+}
+
+func (s *ControlPlaneService) shouldCleanupSubscriptionHighLatencyNode(entry *node.NodeEntry, thresholdMs int) bool {
+	if entry == nil || s == nil || s.RuntimeCfg == nil {
+		return false
+	}
+	cfg := s.RuntimeCfg.Load()
+	if cfg == nil {
+		return false
+	}
+	referenceLatencyMs, ok := node.AverageEWMAForDomainsMs(entry, cfg.LatencyAuthorities)
+	if !ok {
+		return false
+	}
+	return referenceLatencyMs >= float64(thresholdMs)
 }

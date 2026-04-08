@@ -1184,6 +1184,11 @@ func TestAPIContract_ModuleAndActionEndpoints(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create subscription status: got %d, want %d, body=%s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
+	subBody := decodeJSONMap(t, rec)
+	subID, _ := subBody["id"].(string)
+	if subID == "" {
+		t.Fatalf("create subscription missing id: body=%s", rec.Body.String())
+	}
 
 	rec = doJSONRequest(t, srv, http.MethodPost, "/api/v1/subscriptions/11111111-1111-1111-1111-111111111111/actions/refresh", nil, true)
 	if rec.Code != http.StatusNotFound {
@@ -1197,6 +1202,19 @@ func TestAPIContract_ModuleAndActionEndpoints(t *testing.T) {
 	}
 	assertErrorCode(t, rec, "NOT_FOUND")
 
+	rec = doJSONRequest(
+		t,
+		srv,
+		http.MethodPost,
+		"/api/v1/subscriptions/11111111-1111-1111-1111-111111111111/actions/cleanup-high-latency-nodes",
+		map[string]any{"threshold_ms": 1000},
+		true,
+	)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cleanup high latency action missing subscription status: got %d, want %d, body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	assertErrorCode(t, rec, "NOT_FOUND")
+
 	rec = doJSONRequest(t, srv, http.MethodGet, "/api/v1/subscriptions/not-a-uuid", nil, true)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("subscription invalid id status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
@@ -1206,6 +1224,32 @@ func TestAPIContract_ModuleAndActionEndpoints(t *testing.T) {
 	rec = doJSONRequest(t, srv, http.MethodPost, "/api/v1/subscriptions/not-a-uuid/actions/cleanup-circuit-open-nodes", nil, true)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("cleanup action invalid id status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	assertErrorCode(t, rec, "INVALID_ARGUMENT")
+
+	rec = doJSONRequest(
+		t,
+		srv,
+		http.MethodPost,
+		"/api/v1/subscriptions/not-a-uuid/actions/cleanup-high-latency-nodes",
+		map[string]any{"threshold_ms": 1000},
+		true,
+	)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("cleanup high latency action invalid id status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	assertErrorCode(t, rec, "INVALID_ARGUMENT")
+
+	rec = doJSONRequest(
+		t,
+		srv,
+		http.MethodPost,
+		"/api/v1/subscriptions/"+subID+"/actions/cleanup-high-latency-nodes",
+		map[string]any{"threshold_ms": 750},
+		true,
+	)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("cleanup high latency action invalid threshold status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 	assertErrorCode(t, rec, "INVALID_ARGUMENT")
 

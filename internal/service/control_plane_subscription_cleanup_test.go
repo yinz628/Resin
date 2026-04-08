@@ -3,9 +3,11 @@ package service
 import (
 	"errors"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/subscription"
 	"github.com/Resinat/Resin/internal/testutil"
@@ -22,10 +24,23 @@ func newCleanupSubscriptionTestService() (*ControlPlaneService, *topology.Subscr
 		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
 	})
 	cp := &ControlPlaneService{
-		Pool:   pool,
-		SubMgr: subMgr,
+		Pool:       pool,
+		SubMgr:     subMgr,
+		RuntimeCfg: &atomic.Pointer[config.RuntimeConfig]{},
 	}
+	cp.RuntimeCfg.Store(config.NewDefaultRuntimeConfig())
 	return cp, subMgr, pool
+}
+
+func loadCleanupTestReferenceLatency(t *testing.T, entry *node.NodeEntry, latencyMs int64) {
+	t.Helper()
+	if entry == nil || entry.LatencyTable == nil {
+		t.Fatal("node entry latency table is required")
+	}
+	entry.LatencyTable.LoadEntry("cloudflare.com", node.DomainLatencyStats{
+		Ewma:        time.Duration(latencyMs) * time.Millisecond,
+		LastUpdated: time.Now().UTC(),
+	})
 }
 
 func TestCleanupSubscriptionCircuitOpenNodes_RemovesCircuitAndOutboundFailureNodes(t *testing.T) {
@@ -209,5 +224,144 @@ func TestCleanupSubscriptionCircuitOpenNodes_SubscriptionNotFound(t *testing.T) 
 	}
 	if svcErr.Code != "NOT_FOUND" {
 		t.Fatalf("error code = %q, want NOT_FOUND", svcErr.Code)
+	}
+}
+
+func TestCleanupSubscriptionHighLatencyNodes_RemovesNodesAtOrAboveThreshold(t *testing.T) {
+	cp, subMgr, pool := newCleanupSubscriptionTestService()
+
+	subA := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subB := subscription.NewSubscription("sub-b", "sub-b", "https://example.com/b", true, false)
+	subMgr.Register(subA)
+	subMgr.Register(subB)
+
+	outbound := testutil.NewNoopOutbound()
+
+	fastRaw := []byte(`{"type":"ss","server":"10.0.0.1","port":443}`)
+	fastHash := node.HashFromRawOptions(fastRaw)
+	pool.AddNodeFromSub(fastHash, fastRaw, subA.ID)
+	subA.ManagedNodes().StoreNode(fastHash, subscription.ManagedNode{Tags: []string{"fast"}})
+	fastEntry, ok := pool.GetEntry(fastHash)
+	if !ok {
+		t.Fatalf("missing fast node %s in pool", fastHash.Hex())
+	}
+	fastEntry.Outbound.Store(&outbound)
+	loadCleanupTestReferenceLatency(t, fastEntry, 400)
+
+	thresholdRaw := []byte(`{"type":"ss","server":"10.0.0.2","port":443}`)
+	thresholdHash := node.HashFromRawOptions(thresholdRaw)
+	pool.AddNodeFromSub(thresholdHash, thresholdRaw, subA.ID)
+	subA.ManagedNodes().StoreNode(thresholdHash, subscription.ManagedNode{Tags: []string{"threshold"}})
+	thresholdEntry, ok := pool.GetEntry(thresholdHash)
+	if !ok {
+		t.Fatalf("missing threshold node %s in pool", thresholdHash.Hex())
+	}
+	thresholdEntry.Outbound.Store(&outbound)
+	loadCleanupTestReferenceLatency(t, thresholdEntry, 1000)
+
+	slowRaw := []byte(`{"type":"ss","server":"10.0.0.3","port":443}`)
+	slowHash := node.HashFromRawOptions(slowRaw)
+	pool.AddNodeFromSub(slowHash, slowRaw, subA.ID)
+	subA.ManagedNodes().StoreNode(slowHash, subscription.ManagedNode{Tags: []string{"slow"}})
+	slowEntry, ok := pool.GetEntry(slowHash)
+	if !ok {
+		t.Fatalf("missing slow node %s in pool", slowHash.Hex())
+	}
+	slowEntry.Outbound.Store(&outbound)
+	loadCleanupTestReferenceLatency(t, slowEntry, 2200)
+
+	noLatencyRaw := []byte(`{"type":"ss","server":"10.0.0.4","port":443}`)
+	noLatencyHash := node.HashFromRawOptions(noLatencyRaw)
+	pool.AddNodeFromSub(noLatencyHash, noLatencyRaw, subA.ID)
+	subA.ManagedNodes().StoreNode(noLatencyHash, subscription.ManagedNode{Tags: []string{"no-latency"}})
+	noLatencyEntry, ok := pool.GetEntry(noLatencyHash)
+	if !ok {
+		t.Fatalf("missing no-latency node %s in pool", noLatencyHash.Hex())
+	}
+	noLatencyEntry.Outbound.Store(&outbound)
+
+	sharedSlowRaw := []byte(`{"type":"ss","server":"10.0.0.5","port":443}`)
+	sharedSlowHash := node.HashFromRawOptions(sharedSlowRaw)
+	pool.AddNodeFromSub(sharedSlowHash, sharedSlowRaw, subA.ID)
+	pool.AddNodeFromSub(sharedSlowHash, sharedSlowRaw, subB.ID)
+	subA.ManagedNodes().StoreNode(sharedSlowHash, subscription.ManagedNode{Tags: []string{"shared-a"}})
+	subB.ManagedNodes().StoreNode(sharedSlowHash, subscription.ManagedNode{Tags: []string{"shared-b"}})
+	sharedSlowEntry, ok := pool.GetEntry(sharedSlowHash)
+	if !ok {
+		t.Fatalf("missing shared slow node %s in pool", sharedSlowHash.Hex())
+	}
+	sharedSlowEntry.Outbound.Store(&outbound)
+	loadCleanupTestReferenceLatency(t, sharedSlowEntry, 1500)
+
+	cleanedCount, err := cp.CleanupSubscriptionHighLatencyNodes(subA.ID, 1000)
+	if err != nil {
+		t.Fatalf("CleanupSubscriptionHighLatencyNodes: %v", err)
+	}
+	if cleanedCount != 3 {
+		t.Fatalf("cleaned_count = %d, want %d", cleanedCount, 3)
+	}
+
+	fastManaged, ok := subA.ManagedNodes().LoadNode(fastHash)
+	if !ok || fastManaged.Evicted {
+		t.Fatal("fast node should remain active")
+	}
+	noLatencyManaged, ok := subA.ManagedNodes().LoadNode(noLatencyHash)
+	if !ok || noLatencyManaged.Evicted {
+		t.Fatal("no-latency node should remain active")
+	}
+
+	thresholdManaged, ok := subA.ManagedNodes().LoadNode(thresholdHash)
+	if !ok || !thresholdManaged.Evicted {
+		t.Fatal("threshold node should be marked evicted")
+	}
+	slowManaged, ok := subA.ManagedNodes().LoadNode(slowHash)
+	if !ok || !slowManaged.Evicted {
+		t.Fatal("slow node should be marked evicted")
+	}
+	sharedManaged, ok := subA.ManagedNodes().LoadNode(sharedSlowHash)
+	if !ok || !sharedManaged.Evicted {
+		t.Fatal("shared slow node should be marked evicted for subA")
+	}
+
+	if _, ok := pool.GetEntry(thresholdHash); ok {
+		t.Fatal("threshold node should be removed from pool after cleanup")
+	}
+	if _, ok := pool.GetEntry(slowHash); ok {
+		t.Fatal("slow node should be removed from pool after cleanup")
+	}
+	sharedEntryAfter, ok := pool.GetEntry(sharedSlowHash)
+	if !ok {
+		t.Fatal("shared slow node should remain in pool because subB still references it")
+	}
+	sharedRefs := sharedEntryAfter.SubscriptionIDs()
+	if len(sharedRefs) != 1 || sharedRefs[0] != subB.ID {
+		t.Fatalf("shared refs = %v, want [%s]", sharedRefs, subB.ID)
+	}
+
+	cleanedCount, err = cp.CleanupSubscriptionHighLatencyNodes(subA.ID, 1000)
+	if err != nil {
+		t.Fatalf("second CleanupSubscriptionHighLatencyNodes: %v", err)
+	}
+	if cleanedCount != 0 {
+		t.Fatalf("second cleaned_count = %d, want 0", cleanedCount)
+	}
+}
+
+func TestCleanupSubscriptionHighLatencyNodes_InvalidThreshold(t *testing.T) {
+	cp, subMgr, _ := newCleanupSubscriptionTestService()
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	_, err := cp.CleanupSubscriptionHighLatencyNodes(sub.ID, 750)
+	if err == nil {
+		t.Fatal("expected invalid threshold error")
+	}
+	var svcErr *ServiceError
+	if !errors.As(err, &svcErr) {
+		t.Fatalf("error type = %T, want *ServiceError", err)
+	}
+	if svcErr.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("error code = %q, want INVALID_ARGUMENT", svcErr.Code)
 	}
 }
