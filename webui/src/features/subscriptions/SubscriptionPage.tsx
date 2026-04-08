@@ -22,8 +22,11 @@ import { formatApiErrorMessage } from "../../lib/error-message";
 import { formatDateTime, formatGoDuration, formatRelativeTime } from "../../lib/time";
 import {
   cleanupSubscriptionCircuitOpenNodes,
+  cleanupSubscriptionHighLatencyNodes,
   createSubscription,
   deleteSubscription,
+  HIGH_LATENCY_THRESHOLDS,
+  type HighLatencyThreshold,
   listSubscriptions,
   refreshSubscription,
   updateSubscription,
@@ -126,6 +129,7 @@ export function SubscriptionPage() {
   const [selectedSubscriptionId, setSelectedSubscriptionId] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [latencyCleanupThreshold, setLatencyCleanupThreshold] = useState<HighLatencyThreshold>(500);
   const [pendingRefreshIds, setPendingRefreshIds] = useState<Set<string>>(() => new Set());
   const { toasts, showToast, dismissToast } = useToast();
   const pendingRefreshIdsRef = useRef<Set<string>>(new Set());
@@ -366,6 +370,43 @@ export function SubscriptionPage() {
     },
   });
 
+  const cleanupHighLatencyNodesMutation = useMutation({
+    mutationFn: async ({
+      subscription,
+      thresholdMs,
+    }: {
+      subscription: Subscription;
+      thresholdMs: HighLatencyThreshold;
+    }) => {
+      const result = await cleanupSubscriptionHighLatencyNodes(subscription.id, thresholdMs);
+      return { subscription, ...result };
+    },
+    onSuccess: async ({ subscription, cleanedCount, thresholdMs }) => {
+      await invalidateSubscriptionsAndNodes();
+      if (cleanedCount > 0) {
+        showToast(
+          "success",
+          t("订阅 {{name}} 已清理 {{count}} 个参考延迟大于等于 {{threshold}} ms 的节点", {
+            name: subscription.name,
+            count: cleanedCount,
+            threshold: thresholdMs,
+          })
+        );
+        return;
+      }
+      showToast(
+        "success",
+        t("订阅 {{name}} 没有参考延迟大于等于 {{threshold}} ms 的节点", {
+          name: subscription.name,
+          threshold: thresholdMs,
+        })
+      );
+    },
+    onError: (error) => {
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
   const onCreateSubmit = createForm.handleSubmit(async (values) => {
     const payload = {
       name: values.name.trim(),
@@ -399,6 +440,22 @@ export function SubscriptionPage() {
       return;
     }
     await cleanupCircuitOpenNodesMutation.mutateAsync(subscription);
+  };
+
+  const handleCleanupHighLatencyNodes = async (subscription: Subscription) => {
+    const confirmed = window.confirm(
+      t("确认立即清理订阅 {{name}} 中参考延迟大于等于 {{threshold}} ms 的节点吗？", {
+        name: subscription.name,
+        threshold: latencyCleanupThreshold,
+      })
+    );
+    if (!confirmed) {
+      return;
+    }
+    await cleanupHighLatencyNodesMutation.mutateAsync({
+      subscription,
+      thresholdMs: latencyCleanupThreshold,
+    });
   };
 
   const openDrawer = useCallback((subscription: Subscription) => {
@@ -849,6 +906,36 @@ export function SubscriptionPage() {
                     >
                       {isRefreshPending(selectedSubscription.id) ? t("刷新中...") : t("立即刷新")}
                     </Button>
+                  </div>
+
+                  <div className="platform-op-item">
+                    <div className="platform-op-copy">
+                      <h5>{t("清理高延迟节点")}</h5>
+                      <p className="platform-op-hint">{t("按所选阈值清理参考延迟大于等于该值的节点，仅处理已有参考延迟数据的节点。")}</p>
+                    </div>
+                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <Select
+                        id="subscription-high-latency-threshold"
+                        aria-label={t("延迟阈值")}
+                        value={String(latencyCleanupThreshold)}
+                        onChange={(event) => setLatencyCleanupThreshold(Number(event.target.value) as HighLatencyThreshold)}
+                        disabled={cleanupHighLatencyNodesMutation.isPending}
+                        style={{ minWidth: 108 }}
+                      >
+                        {HIGH_LATENCY_THRESHOLDS.map((threshold) => (
+                          <option key={threshold} value={threshold}>
+                            {threshold} ms
+                          </option>
+                        ))}
+                      </Select>
+                      <Button
+                        variant="secondary"
+                        onClick={() => void handleCleanupHighLatencyNodes(selectedSubscription)}
+                        disabled={cleanupHighLatencyNodesMutation.isPending}
+                      >
+                        {cleanupHighLatencyNodesMutation.isPending ? t("清理中...") : t("清理高延迟节点")}
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="platform-op-item">

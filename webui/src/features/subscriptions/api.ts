@@ -41,6 +41,10 @@ export type ListSubscriptionsInput = {
   keyword?: string;
 };
 
+export const HIGH_LATENCY_THRESHOLDS = [500, 1000, 2000] as const;
+
+export type HighLatencyThreshold = (typeof HIGH_LATENCY_THRESHOLDS)[number];
+
 export async function listSubscriptions(input: ListSubscriptionsInput = {}): Promise<PageResponse<Subscription>> {
   const query = new URLSearchParams({
     limit: String(input.limit ?? 50),
@@ -94,4 +98,24 @@ export async function cleanupSubscriptionCircuitOpenNodes(id: string): Promise<n
     method: "POST",
   });
   return data.cleaned_count;
+}
+
+export async function cleanupSubscriptionHighLatencyNodes(
+  id: string,
+  thresholdMs: HighLatencyThreshold
+): Promise<{ cleanedCount: number; thresholdMs: HighLatencyThreshold }> {
+  const data = await apiRequest<{ cleaned_count: number; threshold_ms: HighLatencyThreshold }>(
+    `${basePath}/${id}/actions/cleanup-high-latency-nodes`,
+    {
+      method: "POST",
+      body: {
+        threshold_ms: thresholdMs,
+      },
+    }
+  );
+
+  return {
+    cleanedCount: data.cleaned_count,
+    thresholdMs: data.threshold_ms,
+  };
 }
