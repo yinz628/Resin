@@ -34,6 +34,7 @@ export type PageResponse<T> = {
 
 export type NodeSortBy = "tag" | "created_at" | "failure_count" | "region";
 export type SortOrder = "asc" | "desc";
+export type NodeExportFormat = "singbox_json" | "proxy_uri";
 
 export type NodeListFilters = {
   platform_id?: string;

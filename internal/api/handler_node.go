@@ -207,19 +207,22 @@ func HandleExportNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 		}
 		sortNodeSummaries(nodes, sorting)
 
-		outbounds := make([]json.RawMessage, 0, len(nodes))
-		for _, nodeSummary := range nodes {
-			raw, err := cp.GetNodeRawOptions(nodeSummary.NodeHash)
-			if err != nil {
-				writeServiceError(w, err)
-				return
-			}
-			outbounds = append(outbounds, raw)
+		format, ok := parseNodeExportFormat(r.URL.Query().Get("format"))
+		if !ok {
+			writeInvalidArgument(w, "format: must be singbox_json or proxy_uri")
+			return
 		}
 
-		filename := "resin-nodes-" + time.Now().UTC().Format("20060102-150405") + ".json"
+		body, contentType, filename, err := renderNodeExport(cp, nodes, format)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-		WriteJSON(w, http.StatusOK, nodeExportResponse{Outbounds: outbounds})
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
 	}
 }
 

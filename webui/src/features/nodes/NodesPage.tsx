@@ -19,7 +19,7 @@ import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
 import { listSubscriptions } from "../subscriptions/api";
 import { exportNodes, getNode, listNodes, probeEgress, probeLatency } from "./api";
-import type { NodeSummary } from "./types";
+import type { NodeExportFormat, NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
 
@@ -281,6 +281,7 @@ export function NodesPage() {
   );
   const [sortBy, setSortBy] = useState<NodeSortBy>("tag");
   const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
+  const [exportFormat, setExportFormat] = useState<NodeExportFormat>("singbox_json");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(200);
   const [selectedNodeHash, setSelectedNodeHash] = useState("");
@@ -426,12 +427,12 @@ export function NodesPage() {
   });
 
   const exportNodesMutation = useMutation({
-    mutationFn: async () =>
+    mutationFn: async (format: NodeExportFormat) =>
       exportNodes({
         ...activeFilters,
         sort_by: sortBy,
         sort_order: sortOrder,
-      }),
+      }, format),
     onSuccess: ({ blob, filename }) => {
       downloadBlobFile(blob, filename);
       showToast("success", t("已开始下载 {{count}} 个节点", { count: nodesPage.total }));
@@ -818,10 +819,19 @@ export function NodesPage() {
             </div>
 
             <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.125rem", marginLeft: "auto" }}>
+              <Select
+                id="node-export-format"
+                value={exportFormat}
+                onChange={(event) => setExportFormat(event.target.value as NodeExportFormat)}
+                style={{ minWidth: "140px", minHeight: "32px", height: "32px", padding: "4px 8px", fontSize: "0.875rem" }}
+              >
+                <option value="singbox_json">{t("sing-box JSON")}</option>
+                <option value="proxy_uri">{t("代理 URI")}</option>
+              </Select>
               <Button
                 size="sm"
                 variant="secondary"
-                onClick={() => void exportNodesMutation.mutateAsync()}
+                onClick={() => void exportNodesMutation.mutateAsync(exportFormat)}
                 disabled={exportNodesMutation.isPending || nodesPage.total === 0}
                 title={t("导出当前筛选结果")}
                 style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}

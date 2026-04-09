@@ -2,6 +2,7 @@ import { apiDownload, apiRequest } from "../../lib/api-client";
 import type {
   EgressProbeResult,
   LatencyProbeResult,
+  NodeExportFormat,
   NodeListQuery,
   NodeSummary,
   PageResponse,
@@ -100,12 +101,16 @@ export async function listNodes(filters: NodeListQuery): Promise<PageResponse<No
   };
 }
 
-export async function exportNodes(filters: NodeListQuery): Promise<{ blob: Blob; filename: string }> {
+export async function exportNodes(
+  filters: NodeListQuery,
+  format: NodeExportFormat,
+): Promise<{ blob: Blob; filename: string }> {
   const query = buildNodeListQuery(filters, false);
+  query.set("format", format);
   const download = await apiDownload(`${basePath}/export?${query.toString()}`);
   return {
     blob: download.blob,
-    filename: download.filename || "resin-nodes.json",
+    filename: download.filename || (format === "proxy_uri" ? "resin-nodes.txt" : "resin-nodes.json"),
   };
 }
 

@@ -358,3 +358,76 @@ func TestHandleExportNodes_ReturnsFilteredOutboundsInSortOrder(t *testing.T) {
 		t.Fatalf("second outbound server = %v, want %q", got, "3.3.3.3")
 	}
 }
+
+func TestHandleExportNodes_ProxyURIFormatReturnsSupportedProxyURILines(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	subA := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(subA)
+
+	addNodeForNodeListTestWithTag(
+		t,
+		cp,
+		subA,
+		`{"type":"socks","tag":"charlie","server":"1.1.1.1","server_port":1080,"username":"sockuser","password":"sockpass","version":"5"}`,
+		"",
+		"charlie",
+	)
+	addNodeForNodeListTestWithTag(
+		t,
+		cp,
+		subA,
+		`{"type":"http","tag":"alpha","server":"2.2.2.2","server_port":8080,"username":"httpuser","password":"httppass"}`,
+		"",
+		"alpha",
+	)
+	addNodeForNodeListTestWithTag(
+		t,
+		cp,
+		subA,
+		`{"type":"http","tag":"bravo","server":"3.3.3.3","server_port":8443,"tls":{"enabled":true,"server_name":"tls.example.com"}}`,
+		"",
+		"bravo",
+	)
+	addNodeForNodeListTestWithTag(
+		t,
+		cp,
+		subA,
+		`{"type":"shadowsocks","tag":"delta","server":"4.4.4.4","server_port":443,"method":"aes-256-gcm","password":"secret"}`,
+		"",
+		"delta",
+	)
+
+	rec := doJSONRequest(
+		t,
+		srv,
+		http.MethodGet,
+		"/api/v1/nodes/export?subscription_id="+subA.ID+"&sort_by=tag&sort_order=asc&format=proxy_uri",
+		nil,
+		true,
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export proxy_uri status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	contentType := rec.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/plain") {
+		t.Fatalf("content-type: got %q, want contains text/plain", contentType)
+	}
+
+	lines := strings.Split(strings.TrimSpace(rec.Body.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("proxy_uri lines len = %d, want 3 body=%q", len(lines), rec.Body.String())
+	}
+
+	expected := []string{
+		"http://httpuser:httppass@2.2.2.2:8080",
+		"https://3.3.3.3:8443?sni=tls.example.com",
+		"socks5://sockuser:sockpass@1.1.1.1:1080",
+	}
+	for i, want := range expected {
+		if lines[i] != want {
+			t.Fatalf("line %d = %q, want %q", i, lines[i], want)
+		}
+	}
+}
