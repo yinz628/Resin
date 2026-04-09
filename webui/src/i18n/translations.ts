@@ -623,6 +623,10 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "总流量": "Total traffic",
   "总请求": "Total requests",
   "最近错误：{{message}}": "Recent error: {{message}}",
+  "导出节点": "Export Nodes",
+  "导出中...": "Exporting...",
+  "导出当前筛选结果": "Export current filtered result",
+  "已开始下载 {{count}} 个节点": "Started downloading {{count}} nodes",
   "配置已更新（{{count}} 项变更）": "Config updated ({{count}} changes)",
 };
 

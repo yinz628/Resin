@@ -33,6 +33,12 @@ type RequestOptions = {
   signal?: AbortSignal;
 };
 
+export type DownloadResponse = {
+  blob: Blob;
+  filename: string | null;
+  contentType: string | null;
+};
+
 function buildURL(path: string): string {
   if (path.startsWith("http://") || path.startsWith("https://")) {
     return path;
@@ -51,6 +57,33 @@ async function parseErrorBody(response: Response): Promise<ApiErrorBody | null> 
   } catch {
     return null;
   }
+}
+
+function parseDownloadFilename(contentDisposition: string | null): string | null {
+  if (!contentDisposition) {
+    return null;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+
+  const quotedMatch = contentDisposition.match(/filename="([^"]+)"/i);
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1];
+  }
+
+  const plainMatch = contentDisposition.match(/filename=([^;]+)/i);
+  if (plainMatch?.[1]) {
+    return plainMatch[1].trim();
+  }
+
+  return null;
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -92,4 +125,40 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 
   return (await response.json()) as T;
+}
+
+export async function apiDownload(path: string, options: RequestOptions = {}): Promise<DownloadResponse> {
+  const { method = "GET", body, auth = true, token, signal } = options;
+  const headers = new Headers();
+
+  if (body !== undefined) {
+    headers.set("Content-Type", "application/json; charset=utf-8");
+  }
+
+  if (auth) {
+    const resolvedToken = token?.trim() || getStoredAuthToken();
+    if (resolvedToken) {
+      headers.set("Authorization", `Bearer ${resolvedToken}`);
+    }
+  }
+
+  const response = await fetch(buildURL(path), {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok) {
+    const parsed = await parseErrorBody(response);
+    const code = parsed?.error?.code ?? "HTTP_ERROR";
+    const message = parsed?.error?.message ?? response.statusText;
+    throw new ApiError(response.status, code, message, parsed);
+  }
+
+  return {
+    blob: await response.blob(),
+    filename: parseDownloadFilename(response.headers.get("content-disposition")),
+    contentType: response.headers.get("content-type"),
+  };
 }

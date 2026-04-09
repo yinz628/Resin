@@ -1,4 +1,4 @@
-import { apiRequest } from "../../lib/api-client";
+import { apiDownload, apiRequest } from "../../lib/api-client";
 import type {
   EgressProbeResult,
   LatencyProbeResult,
@@ -49,13 +49,16 @@ function normalizeNode(raw: ApiNodeSummary): NodeSummary {
   return normalized;
 }
 
-export async function listNodes(filters: NodeListQuery): Promise<PageResponse<NodeSummary>> {
+function buildNodeListQuery(filters: NodeListQuery, includePagination: boolean): URLSearchParams {
   const query = new URLSearchParams({
-    limit: String(filters.limit ?? 50),
-    offset: String(filters.offset ?? 0),
     sort_by: filters.sort_by || "tag",
     sort_order: filters.sort_order || "asc",
   });
+
+  if (includePagination) {
+    query.set("limit", String(filters.limit ?? 50));
+    query.set("offset", String(filters.offset ?? 0));
+  }
 
   const appendIfNotEmpty = (key: string, value?: string) => {
     if (!value) {
@@ -85,10 +88,24 @@ export async function listNodes(filters: NodeListQuery): Promise<PageResponse<No
     query.set("enabled", String(filters.enabled));
   }
 
+  return query;
+}
+
+export async function listNodes(filters: NodeListQuery): Promise<PageResponse<NodeSummary>> {
+  const query = buildNodeListQuery(filters, true);
   const data = await apiRequest<PageResponse<ApiNodeSummary>>(`${basePath}?${query.toString()}`);
   return {
     ...data,
     items: data.items.map(normalizeNode),
+  };
+}
+
+export async function exportNodes(filters: NodeListQuery): Promise<{ blob: Blob; filename: string }> {
+  const query = buildNodeListQuery(filters, false);
+  const download = await apiDownload(`${basePath}/export?${query.toString()}`);
+  return {
+    blob: download.blob,
+    filename: download.filename || "resin-nodes.json",
   };
 }
 

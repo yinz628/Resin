@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -280,5 +282,79 @@ func TestHandleListNodes_EnabledFilter(t *testing.T) {
 	body = decodeJSONMap(t, rec)
 	if body["total"] != float64(1) {
 		t.Fatalf("enabled=false total: got %v, want 1", body["total"])
+	}
+}
+
+func TestHandleExportNodes_ReturnsFilteredOutboundsInSortOrder(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	subA := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	subB := subscription.NewSubscription("22222222-2222-2222-2222-222222222222", "sub-b", "https://example.com/b", true, false)
+	cp.SubMgr.Register(subA)
+	cp.SubMgr.Register(subB)
+
+	addNodeForNodeListTestWithTag(
+		t,
+		cp,
+		subA,
+		`{"type":"shadowsocks","tag":"charlie","server":"3.3.3.3","server_port":443,"method":"aes-256-gcm","password":"secret-c"}`,
+		"",
+		"charlie",
+	)
+	addNodeForNodeListTestWithTag(
+		t,
+		cp,
+		subA,
+		`{"type":"shadowsocks","tag":"alpha","server":"1.1.1.1","server_port":443,"method":"aes-256-gcm","password":"secret-a"}`,
+		"",
+		"alpha",
+	)
+	addNodeForNodeListTestWithTag(
+		t,
+		cp,
+		subB,
+		`{"type":"shadowsocks","tag":"bravo","server":"2.2.2.2","server_port":443,"method":"aes-256-gcm","password":"secret-b"}`,
+		"",
+		"bravo",
+	)
+
+	rec := doJSONRequest(
+		t,
+		srv,
+		http.MethodGet,
+		"/api/v1/nodes/export?subscription_id="+subA.ID+"&sort_by=tag&sort_order=asc",
+		nil,
+		true,
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export nodes status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	contentType := rec.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "application/json") {
+		t.Fatalf("content-type: got %q, want contains application/json", contentType)
+	}
+
+	contentDisposition := rec.Header().Get("Content-Disposition")
+	if !strings.Contains(contentDisposition, "attachment;") {
+		t.Fatalf("content-disposition: got %q, want attachment", contentDisposition)
+	}
+
+	var body struct {
+		Outbounds []map[string]any `json:"outbounds"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal export body: %v body=%s", err, rec.Body.String())
+	}
+
+	if len(body.Outbounds) != 2 {
+		t.Fatalf("exported outbounds len = %d, want 2", len(body.Outbounds))
+	}
+
+	if got := body.Outbounds[0]["server"]; got != "1.1.1.1" {
+		t.Fatalf("first outbound server = %v, want %q", got, "1.1.1.1")
+	}
+	if got := body.Outbounds[1]["server"]; got != "3.3.3.3" {
+		t.Fatalf("second outbound server = %v, want %q", got, "3.3.3.3")
 	}
 }

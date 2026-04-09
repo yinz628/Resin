@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper } from "@tanstack/react-table";
-import { AlertTriangle, Eraser, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
+import { AlertTriangle, Download, Eraser, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useLocation } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
@@ -18,7 +18,7 @@ import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
 import { listSubscriptions } from "../subscriptions/api";
-import { getNode, listNodes, probeEgress, probeLatency } from "./api";
+import { exportNodes, getNode, listNodes, probeEgress, probeLatency } from "./api";
 import type { NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
@@ -260,8 +260,20 @@ function regionToFlag(region: string | undefined): string {
   return name ? `${flag} ${code} (${name})` : `${flag} ${code}`;
 }
 
+function downloadBlobFile(blob: Blob, filename: string) {
+  const objectUrl = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 0);
+}
+
 export function NodesPage() {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const location = useLocation();
   const [draftFilters, setDraftFilters] = useState<NodeFilterDraft>(() => draftFromQuery(location.search));
   const [activeFilters, setActiveFilters] = useState<NodeListFilters>(() =>
@@ -281,7 +293,7 @@ export function NodesPage() {
 
   const queryClient = useQueryClient();
 
-  const allRegions = useMemo(() => getAllRegions(), [locale]);
+  const allRegions = useMemo(() => getAllRegions(), []);
 
   const platformsQuery = useQuery({
     queryKey: ["platforms", "all"],
@@ -409,6 +421,22 @@ export function NodesPage() {
     },
     onError: async (error) => {
       await refreshNodes();
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const exportNodesMutation = useMutation({
+    mutationFn: async () =>
+      exportNodes({
+        ...activeFilters,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+      }),
+    onSuccess: ({ blob, filename }) => {
+      downloadBlobFile(blob, filename);
+      showToast("success", t("已开始下载 {{count}} 个节点", { count: nodesPage.total }));
+    },
+    onError: (error) => {
       showToast("error", formatApiErrorMessage(error, t));
     },
   });
@@ -790,6 +818,17 @@ export function NodesPage() {
             </div>
 
             <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.125rem", marginLeft: "auto" }}>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void exportNodesMutation.mutateAsync()}
+                disabled={exportNodesMutation.isPending || nodesPage.total === 0}
+                title={t("导出当前筛选结果")}
+                style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}
+              >
+                <Download size={16} />
+                {exportNodesMutation.isPending ? t("导出中...") : t("导出节点")}
+              </Button>
               <Button size="sm" variant="secondary" onClick={refreshNodes} disabled={nodesQuery.isFetching} style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
                 <RefreshCw size={16} className={nodesQuery.isFetching ? "spin" : undefined} />
                 {t("刷新")}

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -217,6 +218,19 @@ func (s *ControlPlaneService) GetNode(hashStr string) (*NodeSummary, error) {
 	}
 	ns := s.nodeEntryToSummary(h, entry)
 	return &ns, nil
+}
+
+// GetNodeRawOptions returns a copy of the raw outbound JSON for a node.
+func (s *ControlPlaneService) GetNodeRawOptions(hashStr string) (json.RawMessage, error) {
+	h, err := node.ParseHex(hashStr)
+	if err != nil {
+		return nil, invalidArg("node_hash: invalid format")
+	}
+	entry, ok := s.Pool.GetEntry(h)
+	if !ok {
+		return nil, notFound("node not found")
+	}
+	return append(json.RawMessage(nil), entry.RawOptions...), nil
 }
 
 // ProbeEgress triggers a synchronous egress probe and returns results.
