@@ -627,6 +627,8 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "导出中...": "Exporting...",
   "导出当前筛选结果": "Export current filtered result",
   "已开始下载 {{count}} 个节点": "Started downloading {{count}} nodes",
+  "JSON": "JSON",
+  "URI": "URI",
   "代理 URI": "Proxy URI",
   "sing-box JSON": "sing-box JSON",
   "配置已更新（{{count}} 项变更）": "Config updated ({{count}} changes)",

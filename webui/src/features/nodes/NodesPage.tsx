@@ -823,9 +823,10 @@ export function NodesPage() {
                 id="node-export-format"
                 value={exportFormat}
                 onChange={(event) => setExportFormat(event.target.value as NodeExportFormat)}
-                style={{ minWidth: "140px", minHeight: "32px", height: "32px", padding: "4px 8px", fontSize: "0.875rem" }}
+                title={exportFormat === "singbox_json" ? t("sing-box JSON") : t("浠ｇ悊 URI")}
+                style={{ width: "96px", minWidth: "96px", minHeight: "32px", height: "32px", padding: "4px 8px", fontSize: "0.875rem" }}
               >
-                <option value="singbox_json">{t("sing-box JSON")}</option>
+                <option value="singbox_json">{t("JSON")}</option>
                 <option value="proxy_uri">{t("代理 URI")}</option>
               </Select>
               <Button
