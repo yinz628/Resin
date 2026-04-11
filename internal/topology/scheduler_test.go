@@ -348,6 +348,33 @@ func TestScheduler_UpdateSubscription_Idempotent(t *testing.T) {
 	}
 }
 
+func TestScheduler_UpdateSubscription_DeduplicatesRepeatedTagsPerHash(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "http://example.com", true, false)
+	subMgr.Register(sub)
+
+	pool := newTestPool(subMgr)
+	body := makeSubscriptionJSON(
+		`{"type":"shadowsocks","tag":"dup-tag","server":"1.1.1.1","server_port":443}`,
+		`{"type":"shadowsocks","tag":"dup-tag","server":"1.1.1.1","server_port":443}`,
+	)
+	sched := newTestScheduler(subMgr, pool, makeMockFetcher(body, nil))
+
+	sched.UpdateSubscription(sub)
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"shadowsocks","tag":"dup-tag","server":"1.1.1.1","server_port":443}`))
+	managed, ok := sub.ManagedNodes().LoadNode(hash)
+	if !ok {
+		t.Fatal("expected managed node for duplicated hash")
+	}
+	if len(managed.Tags) != 1 {
+		t.Fatalf("expected deduplicated tags len=1, got %d (%v)", len(managed.Tags), managed.Tags)
+	}
+	if managed.Tags[0] != "dup-tag" {
+		t.Fatalf("expected deduplicated tag dup-tag, got %q", managed.Tags[0])
+	}
+}
+
 func TestScheduler_UpdateSubscription_KeepEvictedDoesNotReAddToPool(t *testing.T) {
 	subMgr := NewSubscriptionManager()
 	sub := subscription.NewSubscription("s1", "TestSub", "http://example.com", true, false)
@@ -1109,6 +1136,43 @@ func TestScheduler_OnSubUpdated_Called(t *testing.T) {
 	sched.UpdateSubscription(sub)
 	if callCount.Load() != 2 {
 		t.Fatalf("expected onSubUpdated to be called on failure too, got %d", callCount.Load())
+	}
+}
+
+func TestScheduler_UpdateSubscriptionWithOptions_TriggersImmediateProbeForKeptNodes(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "http://example.com", true, false)
+	subMgr.Register(sub)
+
+	pool := newTestPool(subMgr)
+	body := makeSubscriptionJSON(`{"type":"shadowsocks","tag":"n","server":"1.1.1.1","server_port":443}`)
+	targetHash := node.HashFromRawOptions([]byte(`{"type":"shadowsocks","tag":"n","server":"1.1.1.1","server_port":443}`))
+
+	var got []node.Hash
+	sched := NewSubscriptionScheduler(SchedulerConfig{
+		SubManager: subMgr,
+		Pool:       pool,
+		Fetcher:    makeMockFetcher(body, nil),
+		OnSubRefreshSuccessNode: func(h node.Hash) {
+			got = append(got, h)
+		},
+	})
+
+	// Default refresh path is used by background checks and should not trigger
+	// explicit re-probe callbacks.
+	sched.UpdateSubscription(sub)
+	if len(got) != 0 {
+		t.Fatalf("default UpdateSubscription should not trigger immediate probe callback, got %d", len(got))
+	}
+
+	sched.UpdateSubscriptionWithOptions(sub, SubscriptionUpdateOptions{
+		TriggerImmediateProbe: true,
+	})
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 immediate probe callback on explicit refresh, got %d", len(got))
+	}
+	if got[0] != targetHash {
+		t.Fatalf("immediate probe callback hash = %s, want %s", got[0].Hex(), targetHash.Hex())
 	}
 }
 

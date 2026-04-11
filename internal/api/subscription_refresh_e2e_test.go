@@ -21,6 +21,7 @@ func TestAPIContract_SubscriptionRefreshAction_E2EHTTPSource(t *testing.T) {
 
 	const userAgent = "resin-api-e2e"
 	var subscriptionHits atomic.Int32
+	var refreshProbeHits atomic.Int32
 	subscriptionSource := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		subscriptionHits.Add(1)
 		if got := r.URL.Path; got != "/sub" {
@@ -40,6 +41,9 @@ func TestAPIContract_SubscriptionRefreshAction_E2EHTTPSource(t *testing.T) {
 			func() time.Duration { return 2 * time.Second },
 			func() string { return userAgent },
 		),
+		OnSubRefreshSuccessNode: func(node.Hash) {
+			refreshProbeHits.Add(1)
+		},
 	})
 
 	createRec := doJSONRequest(t, srv, http.MethodPost, "/api/v1/subscriptions", map[string]any{
@@ -129,6 +133,24 @@ func TestAPIContract_SubscriptionRefreshAction_E2EHTTPSource(t *testing.T) {
 	gotHash, _ := item["node_hash"].(string)
 	if gotHash != wantHash {
 		t.Fatalf("node hash: got %q, want %q", gotHash, wantHash)
+	}
+
+	// A second explicit refresh keeps the same hash, but should still request
+	// an immediate re-probe because this is a user-driven refresh, not a
+	// background due-check.
+	refreshRec = doJSONRequest(
+		t,
+		srv,
+		http.MethodPost,
+		"/api/v1/subscriptions/"+subID+"/actions/refresh",
+		nil,
+		true,
+	)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("second refresh subscription status: got %d, want %d, body=%s", refreshRec.Code, http.StatusOK, refreshRec.Body.String())
+	}
+	if got := refreshProbeHits.Load(); got != 2 {
+		t.Fatalf("explicit refresh should trigger re-probe for kept nodes, got callback count %d want 2", got)
 	}
 }
 

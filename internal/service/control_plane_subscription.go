@@ -380,7 +380,9 @@ func (s *ControlPlaneService) UpdateSubscription(id string, patchJSON json.RawMe
 		s.Scheduler.SetSubscriptionEnabled(sub, newEnabled)
 	}
 	if urlChanged || contentChanged {
-		go s.Scheduler.UpdateSubscription(sub)
+		go s.Scheduler.UpdateSubscriptionWithOptions(sub, topology.SubscriptionUpdateOptions{
+			TriggerImmediateProbe: true,
+		})
 	}
 
 	r := s.subToResponse(sub)
@@ -440,7 +442,9 @@ func (s *ControlPlaneService) RefreshSubscription(id string) error {
 	if sub == nil {
 		return notFound("subscription not found")
 	}
-	s.Scheduler.UpdateSubscription(sub)
+	s.Scheduler.UpdateSubscriptionWithOptions(sub, topology.SubscriptionUpdateOptions{
+		TriggerImmediateProbe: true,
+	})
 	return nil
 }
 

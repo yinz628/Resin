@@ -327,6 +327,11 @@ func newTopologyRuntime(
 			return runtimeConfigSnapshot(runtimeCfg).LatencyAuthorities
 		},
 	})
+	triggerImmediateNodeRecheck := func(hash node.Hash) {
+		outboundMgr.EnsureNodeOutbound(hash)
+		probeMgr.TriggerImmediateEgressProbe(hash)
+		probeMgr.TriggerImmediateLatencyProbe(hash)
+	}
 
 	pool.SetOnNodeAdded(func(hash node.Hash) {
 		engine.MarkNodeStatic(hash.Hex())
@@ -353,11 +358,8 @@ func newTopologyRuntime(
 		OnSubUpdated: func(sub *subscription.Subscription) {
 			persistSubscriptionRuntimeState(engine, sub)
 		},
-		OnSubReenabledNode: func(hash node.Hash) {
-			outboundMgr.EnsureNodeOutbound(hash)
-			probeMgr.TriggerImmediateEgressProbe(hash)
-			probeMgr.TriggerImmediateLatencyProbe(hash)
-		},
+		OnSubReenabledNode:      triggerImmediateNodeRecheck,
+		OnSubRefreshSuccessNode: triggerImmediateNodeRecheck,
 	})
 	ephemeralCleaner := topology.NewEphemeralCleaner(
 		subManager,

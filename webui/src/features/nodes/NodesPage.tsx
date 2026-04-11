@@ -209,6 +209,17 @@ function firstTag(node: { display_tag?: string; tags: { tag: string }[] }): stri
   return node.tags[0].tag;
 }
 
+function shortNodeHash(hash: string): string {
+  const trimmed = hash.trim();
+  if (!trimmed) {
+    return "-";
+  }
+  if (trimmed.length <= 8) {
+    return trimmed;
+  }
+  return trimmed.slice(0, 8);
+}
+
 function hasReferenceLatency(node: NodeSummary): node is NodeSummary & { reference_latency_ms: number } {
   return typeof node.reference_latency_ms === "number";
 }
@@ -583,6 +594,12 @@ export function NodesPage() {
       cell: (info) => (
         <div className="nodes-tag-cell">
           <span title={info.getValue() as string}>{info.getValue() as string}</span>
+          <code
+            style={{ fontSize: "11px", color: "var(--text-muted)" }}
+            title={info.row.original.node_hash}
+          >
+            #{shortNodeHash(info.row.original.node_hash)}
+          </code>
         </div>
       ),
     }),
@@ -1067,7 +1084,7 @@ export function NodesPage() {
                       <div key={`${tag.subscription_id}:${tag.tag}`} className="tag-item">
                         <p>{tag.tag}</p>
                         <span>{tag.subscription_name}</span>
-                        <code>{tag.subscription_id}</code>
+                        <code title={detailNode.node_hash}>#{shortNodeHash(detailNode.node_hash)}</code>
                       </div>
                     ))}
                   </div>
