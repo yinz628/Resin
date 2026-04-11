@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Resinat/Resin/internal/node"
+	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/internal/probe"
 	"github.com/Resinat/Resin/internal/subscription"
 )
@@ -25,6 +26,7 @@ type NodeFilters struct {
 	EgressIP       *string
 	ProbedSince    *time.Time
 	TagKeyword     *string
+	Service        *string
 }
 
 // ListNodes returns nodes from the pool with optional filters.
@@ -164,6 +166,14 @@ func (s *ControlPlaneService) nodeEntryMatchesFilters(
 			if !matched {
 				return false
 			}
+		}
+	}
+
+	// Service capability filter.
+	if filters.Service != nil {
+		serviceFilter := platform.NormalizeServiceFilter(*filters.Service)
+		if !platform.MatchServiceFilter(entry.SupportsOpenAI(), entry.SupportsAnthropic(), serviceFilter) {
+			return false
 		}
 	}
 

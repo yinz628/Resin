@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/internal/service"
 )
 
@@ -120,6 +121,14 @@ func parseNodeFiltersOrWriteInvalid(w http.ResponseWriter, r *http.Request) (ser
 	}
 	if v := strings.TrimSpace(q.Get("tag_keyword")); v != "" {
 		filters.TagKeyword = &v
+	}
+	if v := strings.TrimSpace(q.Get("service")); v != "" {
+		normalized := platform.NormalizeServiceFilter(v)
+		if err := platform.ValidateServiceFilters([]string{normalized}); err != nil {
+			writeInvalidArgument(w, err.Error())
+			return service.NodeFilters{}, false
+		}
+		filters.Service = &normalized
 	}
 
 	circuitOpen, ok := parseBoolQueryOrWriteInvalid(w, r, "circuit_open")

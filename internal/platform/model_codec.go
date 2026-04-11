@@ -48,6 +48,7 @@ func NewConfiguredPlatform(
 	id, name string,
 	regexFilters []*regexp.Regexp,
 	regionFilters []string,
+	serviceFilters []string,
 	stickyTTLNs int64,
 	missAction string,
 	emptyAccountBehavior string,
@@ -60,6 +61,7 @@ func NewConfiguredPlatform(
 		fixedHeaders = nil
 	}
 	plat := NewPlatform(id, name, regexFilters, regionFilters)
+	plat.ServiceFilters = NormalizeServiceFilters(serviceFilters)
 	plat.StickyTTLNs = stickyTTLNs
 	plat.ReverseProxyMissAction = missAction
 	plat.ReverseProxyEmptyAccountBehavior = emptyAccountBehavior
@@ -85,6 +87,9 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 		return nil, err
 	}
 	if err := ValidateRegionFilters(mp.RegionFilters); err != nil {
+		return nil, err
+	}
+	if err := ValidateServiceFilters(mp.ServiceFilters); err != nil {
 		return nil, err
 	}
 	emptyAccountBehavior := mp.ReverseProxyEmptyAccountBehavior
@@ -116,6 +121,7 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 		mp.Name,
 		regexFilters,
 		append([]string(nil), mp.RegionFilters...),
+		append([]string(nil), mp.ServiceFilters...),
 		mp.StickyTTLNs,
 		string(missAction),
 		emptyAccountBehavior,

@@ -78,6 +78,85 @@ func TestProbeEgress_Success(t *testing.T) {
 	}
 }
 
+func TestProbeEgress_ServiceSupportTags(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-service-support"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"egress-service-support"}`), "sub1")
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	traceBody := []byte("fl=123\nip=203.0.113.1\nloc=US\nts=1234567890")
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+			return traceBody, 42 * time.Millisecond, nil
+		},
+		StatusFetcher: func(_ node.Hash, url string) (int, error) {
+			switch url {
+			case "https://api.openai.com/v1/models":
+				return 401, nil
+			case "https://api.anthropic.com/v1/messages":
+				return 405, nil
+			default:
+				return 500, nil
+			}
+		},
+	})
+
+	mgr.probeEgress(hash, entry)
+
+	if !entry.SupportsOpenAI() {
+		t.Fatal("expected openai support tag")
+	}
+	if !entry.SupportsAnthropic() {
+		t.Fatal("expected anthropic support tag")
+	}
+}
+
+func TestProbeEgress_ServiceSupportTagsUnsupported(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-service-unsupported"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"egress-service-unsupported"}`), "sub1")
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	traceBody := []byte("fl=123\nip=203.0.113.1\nloc=US\nts=1234567890")
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+			return traceBody, 42 * time.Millisecond, nil
+		},
+		StatusFetcher: func(_ node.Hash, _ string) (int, error) {
+			return 200, nil
+		},
+	})
+
+	mgr.probeEgress(hash, entry)
+
+	if entry.SupportsOpenAI() {
+		t.Fatal("did not expect openai support tag")
+	}
+	if entry.SupportsAnthropic() {
+		t.Fatal("did not expect anthropic support tag")
+	}
+}
+
 // TestProbeEgress_Failure verifies that a failed egress probe calls
 // RecordResult(false) and accumulates failure count.
 func TestProbeEgress_Failure(t *testing.T) {

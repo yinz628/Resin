@@ -177,6 +177,28 @@ func TestPlatform_EvaluateNode_RegionFilter_NoEgressIP(t *testing.T) {
 	}
 }
 
+func TestPlatform_EvaluateNode_ServiceFilter(t *testing.T) {
+	hOpenAI := makeHash(`{"type":"ss","name":"openai"}`)
+	hUnsupported := makeHash(`{"type":"ss","name":"unsupported"}`)
+
+	openAIEntry := makeFullyRoutableEntry(hOpenAI, "sub1")
+	openAIEntry.SetServiceCapabilities(true, false)
+
+	unsupportedEntry := makeFullyRoutableEntry(hUnsupported, "sub1")
+	unsupportedEntry.SetServiceCapabilities(false, false)
+
+	p := NewPlatform("p1", "Test", nil, nil)
+	p.ServiceFilters = []string{"openai"}
+	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
+		fn(hOpenAI, openAIEntry)
+		fn(hUnsupported, unsupportedEntry)
+	}, alwaysLookup, usGeoLookup)
+
+	if p.View().Size() != 1 || !p.View().Contains(hOpenAI) {
+		t.Fatalf("expected only openai node to match, size=%d", p.View().Size())
+	}
+}
+
 func TestPlatform_EvaluateNode_RegionFilter_PrefersStoredRegion(t *testing.T) {
 	p := NewPlatform("p1", "Test", nil, []string{"jp"})
 	h := makeHash(`{"type":"ss"}`)

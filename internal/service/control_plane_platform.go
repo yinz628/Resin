@@ -27,6 +27,7 @@ type PlatformResponse struct {
 	StickyTTL                        string   `json:"sticky_ttl"`
 	RegexFilters                     []string `json:"regex_filters"`
 	RegionFilters                    []string `json:"region_filters"`
+	ServiceFilters                   []string `json:"service_filters"`
 	RoutableNodeCount                int      `json:"routable_node_count"`
 	ReverseProxyMissAction           string   `json:"reverse_proxy_miss_action"`
 	ReverseProxyEmptyAccountBehavior string   `json:"reverse_proxy_empty_account_behavior"`
@@ -44,6 +45,7 @@ func platformToResponse(p model.Platform) PlatformResponse {
 		StickyTTL:                        time.Duration(p.StickyTTLNs).String(),
 		RegexFilters:                     append([]string(nil), p.RegexFilters...),
 		RegionFilters:                    append([]string(nil), p.RegionFilters...),
+		ServiceFilters:                   append([]string(nil), p.ServiceFilters...),
 		RoutableNodeCount:                0,
 		ReverseProxyMissAction:           p.ReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: behavior,
@@ -70,6 +72,7 @@ type platformConfig struct {
 	StickyTTLNs                      int64
 	RegexFilters                     []string
 	RegionFilters                    []string
+	ServiceFilters                   []string
 	ReverseProxyMissAction           string
 	ReverseProxyEmptyAccountBehavior string
 	ReverseProxyFixedAccountHeader   string
@@ -97,6 +100,7 @@ func (s *ControlPlaneService) defaultPlatformConfig(name string) platformConfig 
 		StickyTTLNs:            int64(s.EnvCfg.DefaultPlatformStickyTTL),
 		RegexFilters:           append([]string(nil), s.EnvCfg.DefaultPlatformRegexFilters...),
 		RegionFilters:          append([]string(nil), s.EnvCfg.DefaultPlatformRegionFilters...),
+		ServiceFilters:         []string{},
 		ReverseProxyMissAction: s.EnvCfg.DefaultPlatformReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: normalizePlatformEmptyAccountBehavior(
 			s.EnvCfg.DefaultPlatformReverseProxyEmptyAccountBehavior,
@@ -114,6 +118,7 @@ func platformConfigFromModel(mp model.Platform) platformConfig {
 		StickyTTLNs:                      mp.StickyTTLNs,
 		RegexFilters:                     append([]string(nil), mp.RegexFilters...),
 		RegionFilters:                    append([]string(nil), mp.RegionFilters...),
+		ServiceFilters:                   append([]string(nil), mp.ServiceFilters...),
 		ReverseProxyMissAction:           mp.ReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: normalizePlatformEmptyAccountBehavior(mp.ReverseProxyEmptyAccountBehavior),
 		ReverseProxyFixedAccountHeader:   normalizeHeaderFieldName(mp.ReverseProxyFixedAccountHeader),
@@ -128,6 +133,7 @@ func (cfg platformConfig) toModel(id string, updatedAtNs int64) model.Platform {
 		StickyTTLNs:                      cfg.StickyTTLNs,
 		RegexFilters:                     append([]string(nil), cfg.RegexFilters...),
 		RegionFilters:                    append([]string(nil), cfg.RegionFilters...),
+		ServiceFilters:                   append([]string(nil), cfg.ServiceFilters...),
 		ReverseProxyMissAction:           cfg.ReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: cfg.ReverseProxyEmptyAccountBehavior,
 		ReverseProxyFixedAccountHeader:   cfg.ReverseProxyFixedAccountHeader,
@@ -146,6 +152,7 @@ func (cfg platformConfig) toRuntime(id string) (*platform.Platform, error) {
 		cfg.Name,
 		compiledRegexFilters,
 		cfg.RegionFilters,
+		cfg.ServiceFilters,
 		cfg.StickyTTLNs,
 		cfg.ReverseProxyMissAction,
 		cfg.ReverseProxyEmptyAccountBehavior,
@@ -251,6 +258,10 @@ func setPlatformAllocationPolicy(cfg *platformConfig, policy string) *ServiceErr
 }
 
 func validatePlatformConfig(cfg *platformConfig, validateRegionFilters bool) *ServiceError {
+	cfg.ServiceFilters = platform.NormalizeServiceFilters(cfg.ServiceFilters)
+	if err := platform.ValidateServiceFilters(cfg.ServiceFilters); err != nil {
+		return invalidArg(err.Error())
+	}
 	if validateRegionFilters {
 		if err := platform.ValidateRegionFilters(cfg.RegionFilters); err != nil {
 			return invalidArg(err.Error())
@@ -324,6 +335,7 @@ type CreatePlatformRequest struct {
 	StickyTTL                        *string  `json:"sticky_ttl"`
 	RegexFilters                     []string `json:"regex_filters"`
 	RegionFilters                    []string `json:"region_filters"`
+	ServiceFilters                   []string `json:"service_filters"`
 	ReverseProxyMissAction           *string  `json:"reverse_proxy_miss_action"`
 	ReverseProxyEmptyAccountBehavior *string  `json:"reverse_proxy_empty_account_behavior"`
 	ReverseProxyFixedAccountHeader   *string  `json:"reverse_proxy_fixed_account_header"`
@@ -363,6 +375,9 @@ func (s *ControlPlaneService) CreatePlatform(req CreatePlatformRequest) (*Platfo
 	}
 	if req.RegionFilters != nil {
 		cfg.RegionFilters = req.RegionFilters
+	}
+	if req.ServiceFilters != nil {
+		cfg.ServiceFilters = req.ServiceFilters
 	}
 	if req.ReverseProxyMissAction != nil {
 		if err := setPlatformMissAction(&cfg, *req.ReverseProxyMissAction); err != nil {
@@ -465,6 +480,11 @@ func (s *ControlPlaneService) UpdatePlatform(id string, patchJSON json.RawMessag
 	} else if ok {
 		regionFiltersPatched = true
 		cfg.RegionFilters = filters
+	}
+	if filters, ok, err := patch.optionalStringSlice("service_filters"); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.ServiceFilters = filters
 	}
 
 	if ma, ok, err := patch.optionalString("reverse_proxy_miss_action"); err != nil {
@@ -569,8 +589,9 @@ type PreviewFilterRequest struct {
 }
 
 type PlatformSpecFilter struct {
-	RegexFilters  []string `json:"regex_filters"`
-	RegionFilters []string `json:"region_filters"`
+	RegexFilters   []string `json:"regex_filters"`
+	RegionFilters  []string `json:"region_filters"`
+	ServiceFilters []string `json:"service_filters"`
 }
 
 // NodeSummary is the API response for a node.
@@ -590,6 +611,7 @@ type NodeSummary struct {
 	LastAuthorityLatencyProbeAttempt string    `json:"last_authority_latency_probe_attempt,omitempty"`
 	ReferenceLatencyMs               *float64  `json:"reference_latency_ms,omitempty"`
 	LastEgressUpdateAttempt          string    `json:"last_egress_update_attempt,omitempty"`
+	Services                         []string  `json:"services"`
 	Tags                             []NodeTag `json:"tags"`
 }
 
@@ -614,6 +636,7 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 		HasOutbound:  entry.HasOutbound(),
 		LastError:    entry.GetLastError(),
 		FailureCount: int(entry.FailureCount.Load()),
+		Services:     entry.ServiceTags(),
 	}
 
 	if s != nil && s.Pool != nil {
@@ -679,6 +702,9 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 	if ns.Tags == nil {
 		ns.Tags = []NodeTag{}
 	}
+	if ns.Services == nil {
+		ns.Services = []string{}
+	}
 	return ns
 }
 
@@ -693,6 +719,7 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 
 	var regexFilters []*regexp.Regexp
 	var regionFilters []string
+	var serviceFilters []string
 
 	if hasPlatformID {
 		plat, ok := s.Pool.GetPlatform(*req.PlatformID)
@@ -701,6 +728,7 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 		}
 		regexFilters = plat.RegexFilters
 		regionFilters = plat.RegionFilters
+		serviceFilters = plat.ServiceFilters
 	} else {
 		compiled, err := platform.CompileRegexFilters(req.PlatformSpec.RegexFilters)
 		if err != nil {
@@ -708,7 +736,11 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 		}
 		regexFilters = compiled
 		regionFilters = req.PlatformSpec.RegionFilters
+		serviceFilters = platform.NormalizeServiceFilters(req.PlatformSpec.ServiceFilters)
 		if err := platform.ValidateRegionFilters(regionFilters); err != nil {
+			return nil, invalidArg(err.Error())
+		}
+		if err := platform.ValidateServiceFilters(serviceFilters); err != nil {
 			return nil, invalidArg(err.Error())
 		}
 	}
@@ -730,6 +762,9 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 			if !platform.MatchRegionFilter(region, regionFilters) {
 				return true
 			}
+		}
+		if !platform.MatchServiceFilters(entry.SupportsOpenAI(), entry.SupportsAnthropic(), serviceFilters) {
+			return true
 		}
 		result = append(result, s.nodeEntryToSummary(h, entry))
 		return true

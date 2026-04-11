@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+﻿import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper } from "@tanstack/react-table";
 import { AlertTriangle, Download, Eraser, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
@@ -24,6 +24,7 @@ import { getAllRegions, getRegionName } from "./regions";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
 
 type NodeStatusFilter = "all" | "healthy" | "circuit_open" | "error" | "disabled";
+type NodeServiceFilter = "all" | "openai" | "anthropic" | "unsupported";
 type NodeDisplayStatus = "healthy" | "circuit_open" | "pending_test" | "error" | "disabled";
 type ProbeAction = "egress" | "latency";
 
@@ -31,6 +32,7 @@ type NodeFilterDraft = {
   platform_id: string;
   subscription_id: string;
   tag_keyword: string;
+  service: NodeServiceFilter;
   region: string;
   egress_ip: string;
   status: NodeStatusFilter;
@@ -40,6 +42,7 @@ const defaultFilterDraft: NodeFilterDraft = {
   platform_id: "",
   subscription_id: "",
   tag_keyword: "",
+  service: "all",
   region: "",
   egress_ip: "",
   status: "all",
@@ -91,6 +94,22 @@ function parseStatusParam(value: string | null): NodeStatusFilter | undefined {
   return undefined;
 }
 
+function parseServiceParam(value: string | null): NodeServiceFilter | undefined {
+  if (value === null) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "openai" || normalized === "anthropic" || normalized === "unsupported") {
+    return normalized;
+  }
+  if (normalized === "" || normalized === "all") {
+    return "all";
+  }
+
+  return undefined;
+}
+
 function statusFromQuery(params: URLSearchParams): NodeStatusFilter {
   const explicitStatus = parseStatusParam(params.get("status"));
   if (explicitStatus) {
@@ -130,6 +149,7 @@ function draftFromQuery(search: string): NodeFilterDraft {
     platform_id: trimQueryValue(params, "platform_id"),
     subscription_id: trimQueryValue(params, "subscription_id"),
     tag_keyword: tagKeyword,
+    service: parseServiceParam(params.get("service")) ?? "all",
     region: trimQueryValue(params, "region").toUpperCase(),
     egress_ip: trimQueryValue(params, "egress_ip"),
     status: statusFromQuery(params),
@@ -170,6 +190,7 @@ function draftToActiveFilters(draft: NodeFilterDraft): NodeListFilters {
     platform_id: draft.platform_id,
     subscription_id: draft.subscription_id,
     tag_keyword: draft.tag_keyword,
+    service: draft.service === "all" ? undefined : draft.service,
     region: draft.region,
     egress_ip: draft.egress_ip,
     enabled,
@@ -418,7 +439,7 @@ export function NodesPage() {
     mutationFn: async (hash: string) => probeLatency(hash),
     onSuccess: async (result) => {
       await refreshNodes();
-      showToast("success", t("延迟探测完成：延迟={{latency}}", { latency: formatLatency(result.latency_ewma_ms) }));
+      showToast("success", t("延迟探测完成：延迟 {{latency}}", { latency: formatLatency(result.latency_ewma_ms) }));
     },
     onError: async (error) => {
       await refreshNodes();
@@ -593,6 +614,22 @@ export function NodesPage() {
       },
     }),
     col.display({
+      id: "service",
+      header: t("服务"),
+      cell: (info) => {
+        const services = Array.isArray(info.row.original.services) ? info.row.original.services : [];
+        if (!services.length) {
+          return <Badge variant="muted">{t("不支持")}</Badge>;
+        }
+        return (
+          <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", flexWrap: "wrap" }}>
+            {services.includes("openai") ? <Badge variant="success">OpenAI</Badge> : null}
+            {services.includes("anthropic") ? <Badge variant="warning">Anthropic</Badge> : null}
+          </div>
+        );
+      },
+    }),
+    col.display({
       id: "reference_latency_ms",
       header: t("参考延迟"),
       cell: (info) => {
@@ -751,7 +788,7 @@ export function NodesPage() {
 
             <div style={NODE_FILTER_ITEM_STYLE}>
               <label htmlFor="node-subscription-id" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
-                {t("来自此订阅")}
+                {t("来自订阅")}
               </label>
               <Select
                 id="node-subscription-id"
@@ -765,6 +802,23 @@ export function NodesPage() {
                     {s.name}
                   </option>
                 ))}
+              </Select>
+            </div>
+
+            <div style={NODE_FILTER_ITEM_STYLE}>
+              <label htmlFor="node-service" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                {t("服务")}
+              </label>
+              <Select
+                id="node-service"
+                value={draftFilters.service}
+                onChange={(event) => handleFilterChange("service", event.target.value)}
+                style={NODE_FILTER_CONTROL_STYLE}
+              >
+                <option value="all">{t("全部")}</option>
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="unsupported">{t("不支持")}</option>
               </Select>
             </div>
 
@@ -823,7 +877,7 @@ export function NodesPage() {
                 id="node-export-format"
                 value={exportFormat}
                 onChange={(event) => setExportFormat(event.target.value as NodeExportFormat)}
-                title={exportFormat === "singbox_json" ? t("sing-box JSON") : t("浠ｇ悊 URI")}
+                title={exportFormat === "singbox_json" ? t("sing-box JSON") : t("代理 URI")}
                 style={{ width: "96px", minWidth: "96px", minHeight: "32px", height: "32px", padding: "4px 8px", fontSize: "0.875rem" }}
               >
                 <option value="singbox_json">{t("JSON")}</option>
@@ -973,6 +1027,14 @@ export function NodesPage() {
                     </p>
                   </div>
                   <div>
+                    <span>{t("服务")}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", flexWrap: "wrap" }}>
+                      {detailNode.services?.includes("openai") ? <Badge variant="success">OpenAI</Badge> : null}
+                      {detailNode.services?.includes("anthropic") ? <Badge variant="warning">Anthropic</Badge> : null}
+                      {!detailNode.services?.length ? <Badge variant="muted">{t("不支持")}</Badge> : null}
+                    </div>
+                  </div>
+                  <div>
                     <span>{t("参考延迟")}</span>
                     {(() => {
                       const latencyMs = displayableReferenceLatencyMs(detailNode);
@@ -1052,3 +1114,5 @@ export function NodesPage() {
     </section>
   );
 }
+
+

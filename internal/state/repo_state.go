@@ -109,6 +109,10 @@ func (r *StateRepo) UpsertPlatform(p model.Platform) error {
 	if err := platform.ValidateRegionFilters(p.RegionFilters); err != nil {
 		return err
 	}
+	p.ServiceFilters = platform.NormalizeServiceFilters(p.ServiceFilters)
+	if err := platform.ValidateServiceFilters(p.ServiceFilters); err != nil {
+		return err
+	}
 	missAction := platform.NormalizeReverseProxyMissAction(p.ReverseProxyMissAction)
 	if missAction == "" {
 		return fmt.Errorf("reverse_proxy_miss_action: invalid value %q", p.ReverseProxyMissAction)
@@ -144,26 +148,31 @@ func (r *StateRepo) UpsertPlatform(p model.Platform) error {
 	if err != nil {
 		return fmt.Errorf("encode platform %s region_filters: %w", p.ID, err)
 	}
+	serviceFiltersJSON, err := encodeStringSliceJSON(p.ServiceFilters)
+	if err != nil {
+		return fmt.Errorf("encode platform %s service_filters: %w", p.ID, err)
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	_, err = r.db.Exec(`
-		INSERT INTO platforms (id, name, sticky_ttl_ns, regex_filters_json, region_filters_json,
+		INSERT INTO platforms (id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, service_filters_json,
 		                       reverse_proxy_miss_action, reverse_proxy_empty_account_behavior,
 		                       reverse_proxy_fixed_account_header, allocation_policy, updated_at_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name                     = excluded.name,
 			sticky_ttl_ns            = excluded.sticky_ttl_ns,
 			regex_filters_json       = excluded.regex_filters_json,
 			region_filters_json      = excluded.region_filters_json,
+			service_filters_json     = excluded.service_filters_json,
 			reverse_proxy_miss_action = excluded.reverse_proxy_miss_action,
 			reverse_proxy_empty_account_behavior = excluded.reverse_proxy_empty_account_behavior,
 			reverse_proxy_fixed_account_header   = excluded.reverse_proxy_fixed_account_header,
 			allocation_policy        = excluded.allocation_policy,
 			updated_at_ns            = excluded.updated_at_ns
-		`, p.ID, p.Name, p.StickyTTLNs, regexFiltersJSON, regionFiltersJSON,
+		`, p.ID, p.Name, p.StickyTTLNs, regexFiltersJSON, regionFiltersJSON, serviceFiltersJSON,
 		p.ReverseProxyMissAction, p.ReverseProxyEmptyAccountBehavior, p.ReverseProxyFixedAccountHeader,
 		p.AllocationPolicy, p.UpdatedAtNs)
 	if err != nil {
@@ -218,15 +227,15 @@ func (r *StateRepo) GetPlatformName(id string) (string, error) {
 
 // GetPlatform returns one platform by ID.
 func (r *StateRepo) GetPlatform(id string) (*model.Platform, error) {
-	row := r.db.QueryRow(`SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json,
+	row := r.db.QueryRow(`SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, service_filters_json,
 			reverse_proxy_miss_action, reverse_proxy_empty_account_behavior,
 			reverse_proxy_fixed_account_header, allocation_policy, updated_at_ns
 			FROM platforms WHERE id = ?`, id)
 
 	var p model.Platform
-	var regexFiltersJSON, regionFiltersJSON string
+	var regexFiltersJSON, regionFiltersJSON, serviceFiltersJSON string
 	if err := row.Scan(&p.ID, &p.Name, &p.StickyTTLNs, &regexFiltersJSON,
-		&regionFiltersJSON, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
+		&regionFiltersJSON, &serviceFiltersJSON, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
 		&p.ReverseProxyFixedAccountHeader, &p.AllocationPolicy, &p.UpdatedAtNs); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -241,14 +250,19 @@ func (r *StateRepo) GetPlatform(id string) (*model.Platform, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode platform %s region_filters_json: %w", p.ID, err)
 	}
+	serviceFilters, err := decodeStringSliceJSON(serviceFiltersJSON)
+	if err != nil {
+		return nil, fmt.Errorf("decode platform %s service_filters_json: %w", p.ID, err)
+	}
 	p.RegexFilters = regexFilters
 	p.RegionFilters = regionFilters
+	p.ServiceFilters = serviceFilters
 	return &p, nil
 }
 
 // ListPlatforms returns all platforms.
 func (r *StateRepo) ListPlatforms() ([]model.Platform, error) {
-	rows, err := r.db.Query("SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, reverse_proxy_miss_action, reverse_proxy_empty_account_behavior, reverse_proxy_fixed_account_header, allocation_policy, updated_at_ns FROM platforms")
+	rows, err := r.db.Query("SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, service_filters_json, reverse_proxy_miss_action, reverse_proxy_empty_account_behavior, reverse_proxy_fixed_account_header, allocation_policy, updated_at_ns FROM platforms")
 	if err != nil {
 		return nil, err
 	}
@@ -257,9 +271,9 @@ func (r *StateRepo) ListPlatforms() ([]model.Platform, error) {
 	var result []model.Platform
 	for rows.Next() {
 		var p model.Platform
-		var regexFiltersJSON, regionFiltersJSON string
+		var regexFiltersJSON, regionFiltersJSON, serviceFiltersJSON string
 		if err := rows.Scan(&p.ID, &p.Name, &p.StickyTTLNs, &regexFiltersJSON,
-			&regionFiltersJSON, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
+			&regionFiltersJSON, &serviceFiltersJSON, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
 			&p.ReverseProxyFixedAccountHeader, &p.AllocationPolicy, &p.UpdatedAtNs); err != nil {
 			return nil, err
 		}
@@ -271,8 +285,13 @@ func (r *StateRepo) ListPlatforms() ([]model.Platform, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode platform %s region_filters_json: %w", p.ID, err)
 		}
+		serviceFilters, err := decodeStringSliceJSON(serviceFiltersJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode platform %s service_filters_json: %w", p.ID, err)
+		}
 		p.RegexFilters = regexFilters
 		p.RegionFilters = regionFilters
+		p.ServiceFilters = serviceFilters
 		result = append(result, p)
 	}
 	return result, rows.Err()

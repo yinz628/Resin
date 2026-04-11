@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand/v2"
+	"net/http"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,8 @@ type ProbeConfig struct {
 
 	// Fetcher executes HTTP via node hash. Injectable for testing.
 	Fetcher Fetcher
+	// StatusFetcher executes HTTP via node hash and returns status code.
+	StatusFetcher func(hash node.Hash, url string) (statusCode int, err error)
 
 	// Interval thresholds — closures for hot-reload from RuntimeConfig.
 	MaxEgressTestInterval           func() time.Duration
@@ -68,12 +71,15 @@ type ProbeManager struct {
 	latencyTestURL                  func() string
 	latencyAuthorities              func() []string
 	onProbeEvent                    func(kind string)
+	statusFetcher                   func(hash node.Hash, url string) (statusCode int, err error)
 }
 
 const (
 	egressTraceURL        = "https://cloudflare.com/cdn-cgi/trace"
 	egressTraceDomain     = "cloudflare.com"
 	defaultLatencyTestURL = "https://www.gstatic.com/generate_204"
+	openAIModelsURL       = "https://api.openai.com/v1/models"
+	anthropicMessagesURL  = "https://api.anthropic.com/v1/messages"
 	defaultQueueCap       = 1024
 )
 
@@ -270,6 +276,7 @@ func NewProbeManager(cfg ProbeConfig) *ProbeManager {
 		latencyTestURL:                  cfg.LatencyTestURL,
 		latencyAuthorities:              cfg.LatencyAuthorities,
 		onProbeEvent:                    cfg.OnProbeEvent,
+		statusFetcher:                   cfg.StatusFetcher,
 	}
 }
 
@@ -367,6 +374,7 @@ func (m *ProbeManager) ProbeEgressSync(hash node.Hash) (*EgressProbeResult, erro
 		}
 		return nil, fmt.Errorf("egress probe failed: %w", err)
 	}
+	m.updateServiceCapabilities(hash)
 
 	// Read back EWMA for cloudflare.com from the latency table.
 	var ewmaMs float64
@@ -757,6 +765,7 @@ func (m *ProbeManager) probeEgress(hash node.Hash, entry *node.NodeEntry) {
 		log.Printf("[probe] egress probe failed for %s: %v", hash.Hex(), err)
 		return
 	}
+	m.updateServiceCapabilities(hash)
 }
 
 // probeLatency performs a latency probe against a node using the configured test URL.
@@ -823,4 +832,24 @@ func (m *ProbeManager) currentLatencyTestURL() string {
 		testURL = m.latencyTestURL()
 	}
 	return testURL
+}
+
+func (m *ProbeManager) updateServiceCapabilities(hash node.Hash) {
+	if m.statusFetcher == nil {
+		return
+	}
+
+	openaiSupported := false
+	if statusCode, err := m.statusFetcher(hash, openAIModelsURL); err == nil {
+		openaiSupported = statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
+	}
+
+	anthropicSupported := false
+	if statusCode, err := m.statusFetcher(hash, anthropicMessagesURL); err == nil {
+		anthropicSupported = statusCode == http.StatusUnauthorized ||
+			statusCode == http.StatusForbidden ||
+			statusCode == http.StatusMethodNotAllowed
+	}
+
+	m.pool.UpdateNodeServiceCapabilities(hash, openaiSupported, anthropicSupported)
 }

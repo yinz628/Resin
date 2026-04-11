@@ -20,6 +20,7 @@ export type NodeSummary = {
   last_latency_probe_attempt?: string;
   last_authority_latency_probe_attempt?: string;
   last_egress_update_attempt?: string;
+  services: string[];
   tags: NodeTag[];
 };
 
@@ -43,6 +44,7 @@ export type NodeListFilters = {
   region?: string;
   egress_ip?: string;
   probed_since?: string;
+  service?: "openai" | "anthropic" | "unsupported";
   enabled?: boolean;
   circuit_open?: boolean;
   has_outbound?: boolean;

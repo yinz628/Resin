@@ -23,6 +23,7 @@ const (
 	stateVersionAddEmptyAccountBehavior = 2
 	stateVersionAddFixedAccountHeader   = 3
 	stateVersionNormalizeMissAction     = 4
+	stateVersionAddServiceFilters       = 5
 	stateLegacyBaselineVersion          = stateVersionAddFixedAccountHeader
 )
 
@@ -104,8 +105,14 @@ func prepareLegacyStateBaseline(db *sql.DB, driver migratedb.Driver) error {
 	if err != nil {
 		return err
 	}
+	hasServiceFilters, err := hasTableColumn(db, "platforms", "service_filters_json")
+	if err != nil {
+		return err
+	}
 
 	switch {
+	case hasEmptyBehavior && hasFixedHeader && hasServiceFilters:
+		return setMigrationVersion(driver, stateVersionAddServiceFilters)
 	case hasEmptyBehavior && hasFixedHeader:
 		return setMigrationVersion(driver, stateLegacyBaselineVersion)
 	case hasEmptyBehavior && !hasFixedHeader:

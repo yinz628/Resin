@@ -485,6 +485,87 @@ func TestListNodes_EnabledFilter(t *testing.T) {
 	}
 }
 
+func TestListNodes_ServiceFilter(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	openAIHash := addRoutableNodeForSubscription(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"1.1.1.1","port":443}`),
+		"203.0.113.80",
+	)
+	anthropicHash := addRoutableNodeForSubscription(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"2.2.2.2","port":443}`),
+		"203.0.113.81",
+	)
+	unsupportedHash := addRoutableNodeForSubscription(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"3.3.3.3","port":443}`),
+		"203.0.113.82",
+	)
+
+	openAIEntry, ok := pool.GetEntry(openAIHash)
+	if !ok {
+		t.Fatalf("node %s missing", openAIHash.Hex())
+	}
+	openAIEntry.SetServiceCapabilities(true, false)
+
+	anthropicEntry, ok := pool.GetEntry(anthropicHash)
+	if !ok {
+		t.Fatalf("node %s missing", anthropicHash.Hex())
+	}
+	anthropicEntry.SetServiceCapabilities(false, true)
+
+	unsupportedEntry, ok := pool.GetEntry(unsupportedHash)
+	if !ok {
+		t.Fatalf("node %s missing", unsupportedHash.Hex())
+	}
+	unsupportedEntry.SetServiceCapabilities(false, false)
+
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+		GeoIP:  &geoip.Service{},
+	}
+
+	openai := "openai"
+	nodes, err := cp.ListNodes(NodeFilters{Service: &openai})
+	if err != nil {
+		t.Fatalf("ListNodes(openai): %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].NodeHash != openAIHash.Hex() {
+		t.Fatalf("openai filter result = %+v, want [%s]", nodes, openAIHash.Hex())
+	}
+
+	anthropic := "anthropic"
+	nodes, err = cp.ListNodes(NodeFilters{Service: &anthropic})
+	if err != nil {
+		t.Fatalf("ListNodes(anthropic): %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].NodeHash != anthropicHash.Hex() {
+		t.Fatalf("anthropic filter result = %+v, want [%s]", nodes, anthropicHash.Hex())
+	}
+
+	unsupported := "unsupported"
+	nodes, err = cp.ListNodes(NodeFilters{Service: &unsupported})
+	if err != nil {
+		t.Fatalf("ListNodes(unsupported): %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].NodeHash != unsupportedHash.Hex() {
+		t.Fatalf("unsupported filter result = %+v, want [%s]", nodes, unsupportedHash.Hex())
+	}
+}
+
 func TestProbeEgress_ReturnsRegion(t *testing.T) {
 	subMgr := topology.NewSubscriptionManager()
 	pool := newNodeListTestPool(subMgr)

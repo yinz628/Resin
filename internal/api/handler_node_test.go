@@ -285,6 +285,72 @@ func TestHandleListNodes_EnabledFilter(t *testing.T) {
 	}
 }
 
+func TestHandleListNodes_ServiceFilter(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+
+	rawOpenAI := `{"type":"ss","server":"1.1.1.1","port":443}`
+	rawUnsupported := `{"type":"ss","server":"2.2.2.2","port":443}`
+	addNodeForNodeListTestWithTag(t, cp, sub, rawOpenAI, "", "openai-node")
+	addNodeForNodeListTestWithTag(t, cp, sub, rawUnsupported, "", "unsupported-node")
+
+	openAIHash := node.HashFromRawOptions([]byte(rawOpenAI))
+	openAIEntry, ok := cp.Pool.GetEntry(openAIHash)
+	if !ok {
+		t.Fatalf("node %s missing after add", openAIHash.Hex())
+	}
+	openAIEntry.SetServiceCapabilities(true, false)
+
+	unsupportedHash := node.HashFromRawOptions([]byte(rawUnsupported))
+	unsupportedEntry, ok := cp.Pool.GetEntry(unsupportedHash)
+	if !ok {
+		t.Fatalf("node %s missing after add", unsupportedHash.Hex())
+	}
+	unsupportedEntry.SetServiceCapabilities(false, false)
+
+	rec := doJSONRequest(
+		t,
+		srv,
+		http.MethodGet,
+		"/api/v1/nodes?subscription_id="+sub.ID+"&service=openai",
+		nil,
+		true,
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list nodes with service=openai status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := decodeJSONMap(t, rec)
+	if body["total"] != float64(1) {
+		t.Fatalf("service=openai total: got %v, want 1", body["total"])
+	}
+	items, ok := body["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("items mismatch: got %T len=%d", body["items"], len(items))
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("item type: got %T", items[0])
+	}
+	services, ok := item["services"].([]any)
+	if !ok {
+		t.Fatalf("services type: got %T", item["services"])
+	}
+	if len(services) != 1 || services[0] != "openai" {
+		t.Fatalf("services: got %v, want [openai]", services)
+	}
+}
+
+func TestHandleListNodes_ServiceFilter_Invalid(t *testing.T) {
+	srv, _, _ := newControlPlaneTestServer(t)
+
+	rec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes?service=bad-service", nil, true)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid service filter status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
 func TestHandleExportNodes_ReturnsFilteredOutboundsInSortOrder(t *testing.T) {
 	srv, cp, _ := newControlPlaneTestServer(t)
 

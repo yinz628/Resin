@@ -31,6 +31,7 @@ type Platform struct {
 	// Filter configuration.
 	RegexFilters  []*regexp.Regexp
 	RegionFilters []string // lowercase ISO codes, supports negation "!xx"
+	ServiceFilters []string // openai/anthropic/unsupported
 
 	// Other config fields.
 	StickyTTLNs                      int64
@@ -142,7 +143,14 @@ func (p *Platform) evaluateNode(
 		}
 	}
 
-	// 5. Has at least one latency record.
+	// 5. Service capability filter (when configured).
+	if len(p.ServiceFilters) > 0 {
+		if !MatchServiceFilters(entry.SupportsOpenAI(), entry.SupportsAnthropic(), p.ServiceFilters) {
+			return false
+		}
+	}
+
+	// 6. Has at least one latency record.
 	if !entry.HasLatency() {
 		return false
 	}

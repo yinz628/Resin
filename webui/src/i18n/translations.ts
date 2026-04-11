@@ -269,8 +269,12 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "节点名正则过滤规则（可选）": "Node name regex filters (optional)",
   "地区过滤规则": "Region filters",
   "地区过滤规则（可选）": "Region filters (optional)",
+  "服务过滤规则": "Service filters",
+  "服务过滤规则（可选）": "Service filters (optional)",
   "每行一条": "One per line",
   "每行一条，例如 .*专线.* 或 <订阅名>/.*": "One per line, e.g. .*Dedicated.* or <SubscriptionName>/.*",
+  "每行一个：openai / anthropic / unsupported": "One per line: openai / anthropic / unsupported",
+  "用于限定平台仅选择支持指定 AI 服务的节点。": "Limit platform selection to nodes supporting specified AI services.",
   "技巧：<订阅名>/.* 可筛选来自该订阅的节点。":
     "Tip: use <SubscriptionName>/.* to match nodes from that subscription.",
   "满足所有正则表达式的节点才会被选择":
@@ -423,6 +427,8 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "请求质量": "Request quality",
   "请求总量 + 成功率": "Total requests + success rate",
   "全部": "All",
+  "服务": "Service",
+  "不支持": "Unsupported",
   "全局限额与性能调优": "Global limits and performance tuning",
   "权威域名最大测试间隔": "Max authority probe interval",
   "日志保留目录": "Log retention directory",

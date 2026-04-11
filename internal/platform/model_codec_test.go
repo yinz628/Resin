@@ -15,6 +15,7 @@ func TestBuildFromModel_Success(t *testing.T) {
 		StickyTTLNs:                      3600,
 		RegexFilters:                     []string{`^us-.*$`},
 		RegionFilters:                    []string{"us", "jp"},
+		ServiceFilters:                   []string{"openai", "unsupported"},
 		ReverseProxyMissAction:           "REJECT",
 		ReverseProxyEmptyAccountBehavior: "FIXED_HEADER",
 		ReverseProxyFixedAccountHeader:   "x-account-id",
@@ -58,6 +59,9 @@ func TestBuildFromModel_Success(t *testing.T) {
 	if len(plat.RegionFilters) != 2 || plat.RegionFilters[0] != "us" || plat.RegionFilters[1] != "jp" {
 		t.Fatalf("region filters mismatch: %+v", plat.RegionFilters)
 	}
+	if len(plat.ServiceFilters) != 2 || plat.ServiceFilters[0] != "openai" || plat.ServiceFilters[1] != "unsupported" {
+		t.Fatalf("service filters mismatch: %+v", plat.ServiceFilters)
+	}
 }
 
 func TestBuildFromModel_InvalidRegex(t *testing.T) {
@@ -83,6 +87,21 @@ func TestBuildFromModel_InvalidRegionFilters(t *testing.T) {
 		t.Fatal("expected region decode error")
 	}
 	if !strings.Contains(err.Error(), "region_filters[0]") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildFromModel_InvalidServiceFilters(t *testing.T) {
+	_, err := BuildFromModel(model.Platform{
+		ID:             "plat-1",
+		RegexFilters:   []string{},
+		RegionFilters:  []string{},
+		ServiceFilters: []string{"bad"},
+	})
+	if err == nil {
+		t.Fatal("expected service filter decode error")
+	}
+	if !strings.Contains(err.Error(), "service_filters[0]") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

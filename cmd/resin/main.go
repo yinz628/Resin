@@ -287,6 +287,30 @@ func newTopologyRuntime(
 				},
 			})
 		},
+		StatusFetcher: func(hash node.Hash, url string) (int, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), envCfg.ProbeTimeout)
+			defer cancel()
+			entry, ok := pool.GetEntry(hash)
+			if !ok {
+				return 0, fmt.Errorf("node not found")
+			}
+			outboundPtr := entry.Outbound.Load()
+			if outboundPtr == nil {
+				return 0, outbound.ErrOutboundNotReady
+			}
+			_, statusCode, _, err := netutil.HTTPGetViaOutboundWithStatus(ctx, *outboundPtr, url, netutil.OutboundHTTPOptions{
+				RequireStatusOK: false,
+				OnConnLifecycle: func(op netutil.ConnLifecycleOp) {
+					if onProbeConnLifecycle != nil {
+						onProbeConnLifecycle(op)
+					}
+				},
+			})
+			if err != nil {
+				return 0, err
+			}
+			return statusCode, nil
+		},
 		MaxEgressTestInterval: func() time.Duration {
 			return time.Duration(runtimeConfigSnapshot(runtimeCfg).MaxEgressTestInterval)
 		},

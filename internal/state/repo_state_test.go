@@ -62,6 +62,9 @@ func TestMigrateStateDB_UpgradesLegacyPlatformsColumns(t *testing.T) {
 	if ok, err := hasTableColumn(db, "platforms", "reverse_proxy_fixed_account_header"); err != nil || !ok {
 		t.Fatalf("expected migrated column reverse_proxy_fixed_account_header, ok=%v err=%v", ok, err)
 	}
+	if ok, err := hasTableColumn(db, "platforms", "service_filters_json"); err != nil || !ok {
+		t.Fatalf("expected migrated column service_filters_json, ok=%v err=%v", ok, err)
+	}
 }
 
 func TestMigrateStateDB_LegacyBaselineAdvancesToLatest(t *testing.T) {
@@ -103,8 +106,8 @@ func TestMigrateStateDB_LegacyBaselineAdvancesToLatest(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionNormalizeMissAction {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionNormalizeMissAction)
+	if version != stateVersionAddServiceFilters {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddServiceFilters)
 	}
 }
 
@@ -175,8 +178,8 @@ func TestMigrateStateDB_NormalizesLegacyRandomMissAction(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionNormalizeMissAction {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionNormalizeMissAction)
+	if version != stateVersionAddServiceFilters {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddServiceFilters)
 	}
 }
 
@@ -236,7 +239,7 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 
 	p := model.Platform{
 		ID: "plat-1", Name: "Default", StickyTTLNs: 1000,
-		RegexFilters: []string{}, RegionFilters: []string{},
+		RegexFilters: []string{}, RegionFilters: []string{}, ServiceFilters: []string{"openai"},
 		ReverseProxyMissAction: "TREAT_AS_EMPTY", AllocationPolicy: "BALANCED",
 		UpdatedAtNs: now,
 	}
@@ -257,6 +260,9 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 			got.ReverseProxyEmptyAccountBehavior,
 			"RANDOM",
 		)
+	}
+	if !reflect.DeepEqual(got.ServiceFilters, []string{"openai"}) {
+		t.Fatalf("unexpected service filters: got %v, want %v", got.ServiceFilters, []string{"openai"})
 	}
 
 	// List.

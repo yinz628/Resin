@@ -357,6 +357,21 @@ export function PlatformPage() {
                 </p>
               </div>
 
+              <div className="field-group">
+                <label className="field-label" htmlFor="create-service-filter">
+                  {t("服务过滤规则（可选）")}
+                </label>
+                <Textarea
+                  id="create-service-filter"
+                  rows={3}
+                  placeholder={t("每行一个：openai / anthropic / unsupported")}
+                  {...createForm.register("service_filters_text")}
+                />
+                <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                  {t("用于限定平台仅选择支持指定 AI 服务的节点。")}
+                </p>
+              </div>
+
               <div className="detail-actions">
                 <Button type="submit" disabled={createMutation.isPending}>
                   {createMutation.isPending ? t("创建中...") : t("确认创建")}

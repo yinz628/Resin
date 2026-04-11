@@ -12,6 +12,7 @@ const basePath = "/api/v1/nodes";
 
 type ApiNodeSummary = Omit<NodeSummary, "tags"> & {
   tags?: NodeSummary["tags"] | null;
+  services?: string[] | null;
   enabled?: boolean | null;
   display_tag?: string | null;
   last_error?: string | null;
@@ -31,6 +32,7 @@ function normalizeNode(raw: ApiNodeSummary): NodeSummary {
     ...rest,
     enabled: raw.enabled !== false,
     display_tag: raw.display_tag || "",
+    services: Array.isArray(raw.services) ? raw.services : [],
     tags: Array.isArray(raw.tags) ? raw.tags : [],
     last_error: raw.last_error || "",
     circuit_open_since: raw.circuit_open_since || "",
@@ -75,6 +77,7 @@ function buildNodeListQuery(filters: NodeListQuery, includePagination: boolean):
   appendIfNotEmpty("platform_id", filters.platform_id);
   appendIfNotEmpty("subscription_id", filters.subscription_id);
   appendIfNotEmpty("tag_keyword", filters.tag_keyword);
+  appendIfNotEmpty("service", filters.service);
   appendIfNotEmpty("region", filters.region?.toLowerCase());
   appendIfNotEmpty("egress_ip", filters.egress_ip);
   appendIfNotEmpty("probed_since", filters.probed_since);

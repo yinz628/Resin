@@ -56,6 +56,7 @@ func buildPreviewFilterFixture(t *testing.T) previewFilterFixture {
 	hkEntry.Outbound.Store(&hkOutbound)
 	hkEntry.SetEgressIP(netip.MustParseAddr("1.1.1.1"))
 	hkEntry.SetEgressRegion("hk")
+	hkEntry.SetServiceCapabilities(true, false)
 
 	usEntry, ok := pool.GetEntry(usHash)
 	if !ok {
@@ -65,6 +66,7 @@ func buildPreviewFilterFixture(t *testing.T) previewFilterFixture {
 	usEntry.Outbound.Store(&usOutbound)
 	usEntry.SetEgressIP(netip.MustParseAddr("2.2.2.2"))
 	usEntry.SetEgressRegion("us")
+	usEntry.SetServiceCapabilities(false, true)
 
 	unknownEntry, ok := pool.GetEntry(unknownHash)
 	if !ok {
@@ -73,6 +75,7 @@ func buildPreviewFilterFixture(t *testing.T) previewFilterFixture {
 	unknownOutbound := testutil.NewNoopOutbound()
 	unknownEntry.Outbound.Store(&unknownOutbound)
 	unknownEntry.SetEgressIP(netip.MustParseAddr("3.3.3.3"))
+	unknownEntry.SetServiceCapabilities(false, false)
 
 	cp := &ControlPlaneService{
 		Pool:   pool,
@@ -159,5 +162,25 @@ func TestPreviewFilter_RegionNegation_UnknownRegionExcluded(t *testing.T) {
 		if node.NodeHash == fixture.unknownHash {
 			t.Fatalf("node with unknown region %s should not match region filters", fixture.unknownHash)
 		}
+	}
+}
+
+func TestPreviewFilter_ServiceFilter(t *testing.T) {
+	fixture := buildPreviewFilterFixture(t)
+
+	nodes, err := fixture.cp.PreviewFilter(PreviewFilterRequest{
+		PlatformSpec: &PlatformSpecFilter{
+			RegexFilters:   []string{".*"},
+			ServiceFilters: []string{"openai"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreviewFilter: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("nodes len = %d, want 1", len(nodes))
+	}
+	if nodes[0].NodeHash != fixture.hkHash {
+		t.Fatalf("matched node = %s, want %s", nodes[0].NodeHash, fixture.hkHash)
 	}
 }

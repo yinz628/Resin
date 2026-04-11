@@ -41,11 +41,17 @@ type NodeEntry struct {
 	LastLatencyProbeAttempt          atomic.Int64
 	LastAuthorityLatencyProbeAttempt atomic.Int64
 	LastEgressUpdateAttempt          atomic.Int64
+	serviceCapabilities              atomic.Uint32
 	LatencyTable                     *LatencyTable // per-domain latency stats; nil if not initialized
 
 	// Outbound instance for this node.
 	Outbound atomic.Pointer[adapter.Outbound]
 }
+
+const (
+	serviceCapabilityOpenAI uint32 = 1 << iota
+	serviceCapabilityAnthropic
+)
 
 // NewNodeEntry creates a NodeEntry with the given static fields.
 // maxLatencyTableEntries controls the bounded size of the regular-domain LRU
@@ -253,6 +259,54 @@ func (e *NodeEntry) SetEgressRegion(region string) {
 		return
 	}
 	e.egressRegion.Store(&region)
+}
+
+func encodeServiceCapabilities(openai, anthropic bool) uint32 {
+	var bits uint32
+	if openai {
+		bits |= serviceCapabilityOpenAI
+	}
+	if anthropic {
+		bits |= serviceCapabilityAnthropic
+	}
+	return bits
+}
+
+// SetServiceCapabilities updates the node's supported AI service markers.
+// Returns true when the underlying value changed.
+func (e *NodeEntry) SetServiceCapabilities(openai, anthropic bool) bool {
+	target := encodeServiceCapabilities(openai, anthropic)
+	for {
+		current := e.serviceCapabilities.Load()
+		if current == target {
+			return false
+		}
+		if e.serviceCapabilities.CompareAndSwap(current, target) {
+			return true
+		}
+	}
+}
+
+// SupportsOpenAI reports whether the node can access OpenAI APIs.
+func (e *NodeEntry) SupportsOpenAI() bool {
+	return e.serviceCapabilities.Load()&serviceCapabilityOpenAI != 0
+}
+
+// SupportsAnthropic reports whether the node can access Anthropic APIs.
+func (e *NodeEntry) SupportsAnthropic() bool {
+	return e.serviceCapabilities.Load()&serviceCapabilityAnthropic != 0
+}
+
+// ServiceTags returns stable service labels for API/UI display.
+func (e *NodeEntry) ServiceTags() []string {
+	tags := make([]string, 0, 2)
+	if e.SupportsOpenAI() {
+		tags = append(tags, "openai")
+	}
+	if e.SupportsAnthropic() {
+		tags = append(tags, "anthropic")
+	}
+	return tags
 }
 
 // GetRegion resolves a node region using explicit probe metadata first,

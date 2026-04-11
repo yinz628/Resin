@@ -664,6 +664,22 @@ func (p *GlobalNodePool) UpdateNodeEgressIP(hash node.Hash, ip *netip.Addr, loc 
 	}
 }
 
+// UpdateNodeServiceCapabilities updates node-level AI service capability markers.
+// Any change triggers platform re-evaluation because platforms may filter by service.
+func (p *GlobalNodePool) UpdateNodeServiceCapabilities(hash node.Hash, openai, anthropic bool) {
+	entry, ok := p.nodes.Load(hash)
+	if !ok {
+		return
+	}
+	if !entry.SetServiceCapabilities(openai, anthropic) {
+		return
+	}
+	p.notifyAllPlatformsDirty(hash)
+	if p.onNodeDynamicChanged != nil {
+		p.onNodeDynamicChanged(hash)
+	}
+}
+
 func (p *GlobalNodePool) isAuthorityDomain(domain string) bool {
 	if domain == "" || p.latencyAuthorities == nil {
 		return false
