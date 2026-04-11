@@ -111,6 +111,7 @@ func TestBootstrapRestart_RecoversTopologyAndStickyLease(t *testing.T) {
 	entry1.LastLatencyProbeAttempt.Store(latencyAttemptAt)
 	entry1.LastAuthorityLatencyProbeAttempt.Store(authorityAttemptAt)
 	entry1.FailureCount.Store(2)
+	entry1.SetServiceCapabilities(true, true)
 	if entry1.LatencyTable == nil {
 		t.Fatal("node latency table should be initialized")
 	}
@@ -246,6 +247,12 @@ func TestBootstrapRestart_RecoversTopologyAndStickyLease(t *testing.T) {
 	}
 	if got := entry2.LastAuthorityLatencyProbeAttempt.Load(); got != authorityAttemptAt {
 		t.Fatalf("last_authority_latency_probe_attempt_ns: got %d, want %d", got, authorityAttemptAt)
+	}
+	if !entry2.SupportsOpenAI() {
+		t.Fatal("openai service capability should be restored after restart")
+	}
+	if !entry2.SupportsAnthropic() {
+		t.Fatal("anthropic service capability should be restored after restart")
 	}
 	if entry2.LatencyTable == nil {
 		t.Fatal("latency table should be restored")

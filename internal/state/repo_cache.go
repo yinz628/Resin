@@ -86,6 +86,8 @@ func (r *CacheRepo) BulkUpsertNodesDynamic(nodes []model.NodeDynamic) error {
 				n.LastLatencyProbeAttemptNs,
 				n.LastAuthorityLatencyProbeAttemptNs,
 				n.LastEgressUpdateAttemptNs,
+				boolToSQLiteInt(n.SupportsOpenAI),
+				boolToSQLiteInt(n.SupportsAnthropic),
 			)
 			return err
 		},
@@ -109,7 +111,8 @@ func (r *CacheRepo) BulkDeleteNodesDynamic(hashes []string) error {
 func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 	rows, err := r.db.Query(`
 		SELECT hash, failure_count, circuit_open_since, egress_ip, egress_region, egress_updated_at_ns,
-		       last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns
+		       last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns,
+		       supports_openai, supports_anthropic
 		FROM nodes_dynamic`)
 	if err != nil {
 		return nil, err
@@ -119,6 +122,7 @@ func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 	var result []model.NodeDynamic
 	for rows.Next() {
 		var n model.NodeDynamic
+		var supportsOpenAI, supportsAnthropic int
 		if err := rows.Scan(
 			&n.Hash,
 			&n.FailureCount,
@@ -129,9 +133,13 @@ func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 			&n.LastLatencyProbeAttemptNs,
 			&n.LastAuthorityLatencyProbeAttemptNs,
 			&n.LastEgressUpdateAttemptNs,
+			&supportsOpenAI,
+			&supportsAnthropic,
 		); err != nil {
 			return nil, err
 		}
+		n.SupportsOpenAI = supportsOpenAI != 0
+		n.SupportsAnthropic = supportsAnthropic != 0
 		result = append(result, n)
 	}
 	return result, rows.Err()
@@ -398,6 +406,8 @@ func (r *CacheRepo) FlushTx(ops FlushOps) error {
 				n.LastLatencyProbeAttemptNs,
 				n.LastAuthorityLatencyProbeAttemptNs,
 				n.LastEgressUpdateAttemptNs,
+				boolToSQLiteInt(n.SupportsOpenAI),
+				boolToSQLiteInt(n.SupportsAnthropic),
 			)
 			return err
 		}},
@@ -453,9 +463,10 @@ const (
 
 	upsertNodesDynamicSQL = `INSERT INTO nodes_dynamic (
 			hash, failure_count, circuit_open_since, egress_ip, egress_region, egress_updated_at_ns,
-			last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns
+			last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns,
+			supports_openai, supports_anthropic
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(hash) DO UPDATE SET
 			failure_count                          = excluded.failure_count,
 			circuit_open_since                     = excluded.circuit_open_since,
@@ -464,7 +475,9 @@ const (
 			egress_updated_at_ns                   = excluded.egress_updated_at_ns,
 			last_latency_probe_attempt_ns          = excluded.last_latency_probe_attempt_ns,
 			last_authority_latency_probe_attempt_ns = excluded.last_authority_latency_probe_attempt_ns,
-			last_egress_update_attempt_ns          = excluded.last_egress_update_attempt_ns`
+			last_egress_update_attempt_ns          = excluded.last_egress_update_attempt_ns,
+			supports_openai                        = excluded.supports_openai,
+			supports_anthropic                     = excluded.supports_anthropic`
 
 	upsertNodeLatencySQL = `INSERT INTO node_latency (node_hash, domain, ewma_ns, last_updated_ns)
 		 VALUES (?, ?, ?, ?)
@@ -493,3 +506,10 @@ const (
 	deleteLeasesSQL            = "DELETE FROM leases WHERE platform_id = ? AND account = ?"
 	deleteSubscriptionNodesSQL = "DELETE FROM subscription_nodes WHERE subscription_id = ? AND node_hash = ?"
 )
+
+func boolToSQLiteInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}

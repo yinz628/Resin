@@ -332,6 +332,10 @@ func newTopologyRuntime(
 		probeMgr.TriggerImmediateEgressProbe(hash)
 		probeMgr.TriggerImmediateLatencyProbe(hash)
 	}
+	triggerImmediateNodeServiceRefresh := func(hash node.Hash) {
+		outboundMgr.EnsureNodeOutbound(hash)
+		probeMgr.TriggerImmediateServiceProbe(hash)
+	}
 
 	pool.SetOnNodeAdded(func(hash node.Hash) {
 		engine.MarkNodeStatic(hash.Hex())
@@ -358,8 +362,9 @@ func newTopologyRuntime(
 		OnSubUpdated: func(sub *subscription.Subscription) {
 			persistSubscriptionRuntimeState(engine, sub)
 		},
-		OnSubReenabledNode:      triggerImmediateNodeRecheck,
-		OnSubRefreshSuccessNode: triggerImmediateNodeRecheck,
+		OnSubReenabledNode:                triggerImmediateNodeRecheck,
+		OnSubRefreshSuccessNode:           triggerImmediateNodeRecheck,
+		OnSubBackgroundRefreshSuccessNode: triggerImmediateNodeServiceRefresh,
 	})
 	ephemeralCleaner := topology.NewEphemeralCleaner(
 		subManager,
@@ -595,6 +600,8 @@ func newFlushReaders(
 				LastLatencyProbeAttemptNs:          entry.LastLatencyProbeAttempt.Load(),
 				LastAuthorityLatencyProbeAttemptNs: entry.LastAuthorityLatencyProbeAttempt.Load(),
 				LastEgressUpdateAttemptNs:          entry.LastEgressUpdateAttempt.Load(),
+				SupportsOpenAI:                     entry.SupportsOpenAI(),
+				SupportsAnthropic:                  entry.SupportsAnthropic(),
 			}
 		},
 		ReadNodeLatency: func(key model.NodeLatencyKey) *model.NodeLatency {
@@ -932,6 +939,7 @@ func restoreBootstrapNodeDynamics(
 		}
 		entry.SetEgressRegion(nd.EgressRegion)
 		entry.LastEgressUpdate.Store(nd.EgressUpdatedAtNs)
+		entry.SetServiceCapabilities(nd.SupportsOpenAI, nd.SupportsAnthropic)
 	}
 	log.Printf("Loaded %d node dynamic states from cache.db", len(dynamics))
 	return nil

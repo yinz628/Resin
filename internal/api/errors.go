@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Resinat/Resin/internal/service"
 )
@@ -36,6 +37,31 @@ func writeDecodeBodyError(w http.ResponseWriter, err error) {
 	writeInvalidArgument(w, err.Error())
 }
 
+func publicServiceErrorMessage(svcErr *service.ServiceError) string {
+	if svcErr == nil {
+		return "internal server error"
+	}
+	message := strings.TrimSpace(svcErr.Message)
+	if svcErr.Code != "INTERNAL" || svcErr.Err == nil {
+		return message
+	}
+
+	cause := strings.TrimSpace(svcErr.Err.Error())
+	if cause == "" {
+		return message
+	}
+	if message == "" {
+		return cause
+	}
+	if strings.HasPrefix(cause, message) {
+		return cause
+	}
+	if strings.Contains(message, cause) {
+		return message
+	}
+	return message + ": " + cause
+}
+
 // writeServiceError maps service errors to HTTP response codes.
 func writeServiceError(w http.ResponseWriter, err error) {
 	if err == nil {
@@ -56,7 +82,7 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		default:
 			status = http.StatusInternalServerError
 		}
-		WriteError(w, status, svcErr.Code, svcErr.Message)
+		WriteError(w, status, svcErr.Code, publicServiceErrorMessage(svcErr))
 		return
 	}
 	WriteError(w, http.StatusInternalServerError, "INTERNAL", "internal server error")

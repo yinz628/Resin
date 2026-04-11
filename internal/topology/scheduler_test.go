@@ -1176,6 +1176,63 @@ func TestScheduler_UpdateSubscriptionWithOptions_TriggersImmediateProbeForKeptNo
 	}
 }
 
+func TestScheduler_UpdateSubscription_TriggersBackgroundServiceRefreshForKeptNodes(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "http://example.com", true, false)
+	subMgr.Register(sub)
+
+	pool := newTestPool(subMgr)
+	body := makeSubscriptionJSON(`{"type":"shadowsocks","tag":"n","server":"1.1.1.1","server_port":443}`)
+	targetHash := node.HashFromRawOptions([]byte(`{"type":"shadowsocks","tag":"n","server":"1.1.1.1","server_port":443}`))
+
+	var immediate []node.Hash
+	var background []node.Hash
+	sched := NewSubscriptionScheduler(SchedulerConfig{
+		SubManager: subMgr,
+		Pool:       pool,
+		Fetcher:    makeMockFetcher(body, nil),
+		OnSubRefreshSuccessNode: func(h node.Hash) {
+			immediate = append(immediate, h)
+		},
+		OnSubBackgroundRefreshSuccessNode: func(h node.Hash) {
+			background = append(background, h)
+		},
+	})
+
+	// Initial background refresh adds the node; new nodes already get node-added
+	// callbacks, so the background service-refresh callback is reserved for kept
+	// nodes on later refreshes.
+	sched.UpdateSubscription(sub)
+	if len(background) != 0 {
+		t.Fatalf("initial background refresh should not trigger kept-node service callback, got %d", len(background))
+	}
+	if len(immediate) != 0 {
+		t.Fatalf("initial background refresh should not trigger immediate probe callback, got %d", len(immediate))
+	}
+
+	sched.UpdateSubscription(sub)
+	if len(background) != 1 {
+		t.Fatalf("expected exactly 1 background service callback on kept-node refresh, got %d", len(background))
+	}
+	if background[0] != targetHash {
+		t.Fatalf("background service callback hash = %s, want %s", background[0].Hex(), targetHash.Hex())
+	}
+	if len(immediate) != 0 {
+		t.Fatalf("background refresh should not trigger immediate probe callback, got %d", len(immediate))
+	}
+
+	background = nil
+	sched.UpdateSubscriptionWithOptions(sub, SubscriptionUpdateOptions{
+		TriggerImmediateProbe: true,
+	})
+	if len(background) != 0 {
+		t.Fatalf("explicit refresh should not also trigger background service callback, got %d", len(background))
+	}
+	if len(immediate) != 1 {
+		t.Fatalf("explicit refresh should trigger immediate probe callback once, got %d", len(immediate))
+	}
+}
+
 // --- Test: Disabled ephemeral sub still gets evicted ---
 
 func TestEphemeralCleaner_DisabledEphemeralStillEvicted(t *testing.T) {

@@ -90,6 +90,8 @@ func TestCacheRepo_NodesDynamic_BulkUpsertAndLoad(t *testing.T) {
 			LastLatencyProbeAttemptNs:          700,
 			LastAuthorityLatencyProbeAttemptNs: 800,
 			LastEgressUpdateAttemptNs:          900,
+			SupportsOpenAI:                     true,
+			SupportsAnthropic:                  false,
 		},
 	}
 	if err := repo.BulkUpsertNodesDynamic(nodes); err != nil {
@@ -110,6 +112,9 @@ func TestCacheRepo_NodesDynamic_BulkUpsertAndLoad(t *testing.T) {
 		loaded[0].LastAuthorityLatencyProbeAttemptNs != 800 ||
 		loaded[0].LastEgressUpdateAttemptNs != 900 {
 		t.Fatalf("unexpected probe attempt fields: %+v", loaded[0])
+	}
+	if !loaded[0].SupportsOpenAI || loaded[0].SupportsAnthropic {
+		t.Fatalf("unexpected service capability fields: %+v", loaded[0])
 	}
 
 	// Update.

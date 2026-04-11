@@ -95,6 +95,7 @@ type probeTaskKind uint8
 const (
 	probeTaskKindEgress probeTaskKind = iota
 	probeTaskKindLatency
+	probeTaskKindService
 )
 
 type probeTaskKey struct {
@@ -335,6 +336,12 @@ func (m *ProbeManager) TriggerImmediateLatencyProbe(hash node.Hash) {
 	m.enqueueProbe(hash, probeTaskKindLatency, probePriorityNormal)
 }
 
+// TriggerImmediateServiceProbe enqueues an async service-capability probe for a
+// node. Caller returns immediately.
+func (m *ProbeManager) TriggerImmediateServiceProbe(hash node.Hash) {
+	m.enqueueProbe(hash, probeTaskKindService, probePriorityHigh)
+}
+
 // EgressProbeResult holds the results of a synchronous egress probe.
 type EgressProbeResult struct {
 	EgressIP      string  `json:"egress_ip"`
@@ -369,6 +376,7 @@ func (m *ProbeManager) ProbeEgressSync(hash node.Hash) (*EgressProbeResult, erro
 
 	ip, stage, err := m.performEgressProbe(hash)
 	if err != nil {
+		m.updateServiceCapabilities(hash)
 		if stage == egressProbeParseError {
 			return nil, fmt.Errorf("parse egress IP: %w", err)
 		}
@@ -423,8 +431,11 @@ func (m *ProbeManager) ProbeLatencySync(hash node.Hash) (*LatencyProbeResult, er
 	}
 
 	if err := m.performLatencyProbe(hash, testURL); err != nil {
+		m.updateServiceCapabilities(hash)
 		return nil, fmt.Errorf("latency probe failed: %w", err)
 	}
+
+	m.updateServiceCapabilities(hash)
 
 	// Read back EWMA.
 	var ewmaMs float64
@@ -554,6 +565,8 @@ func (m *ProbeManager) executeTask(task probeTask) {
 		m.probeEgress(task.key.hash, entry)
 	case probeTaskKindLatency:
 		m.probeLatency(task.key.hash, entry, m.currentLatencyTestURL())
+	case probeTaskKindService:
+		m.probeService(task.key.hash, entry)
 	}
 }
 
@@ -758,6 +771,7 @@ func (m *ProbeManager) probeEgress(hash node.Hash, entry *node.NodeEntry) {
 
 	_, stage, err := m.performEgressProbe(hash)
 	if err != nil {
+		m.updateServiceCapabilities(hash)
 		if stage == egressProbeParseError {
 			log.Printf("[probe] parse egress IP for %s: %v", hash.Hex(), err)
 			return
@@ -785,9 +799,21 @@ func (m *ProbeManager) probeLatency(hash node.Hash, entry *node.NodeEntry, testU
 	}
 
 	if err := m.performLatencyProbe(hash, testURL); err != nil {
+		m.updateServiceCapabilities(hash)
 		log.Printf("[probe] latency probe failed for %s: %v", hash.Hex(), err)
 		return
 	}
+	m.updateServiceCapabilities(hash)
+}
+
+func (m *ProbeManager) probeService(hash node.Hash, entry *node.NodeEntry) {
+	if m.statusFetcher == nil {
+		return
+	}
+	if entry.Outbound.Load() == nil {
+		return
+	}
+	m.updateServiceCapabilities(hash)
 }
 
 func (m *ProbeManager) performEgressProbe(hash node.Hash) (netip.Addr, egressProbeErrorStage, error) {
@@ -839,12 +865,20 @@ func (m *ProbeManager) updateServiceCapabilities(hash node.Hash) {
 		return
 	}
 
-	openaiSupported := false
+	entry, ok := m.pool.GetEntry(hash)
+	if !ok || entry == nil {
+		return
+	}
+
+	// Preserve the last known service capability when the status probe itself
+	// fails, so a transient fetch error does not downgrade the node to
+	// "unsupported" across the UI/platform filters.
+	openaiSupported := entry.SupportsOpenAI()
 	if statusCode, err := m.statusFetcher(hash, openAIModelsURL); err == nil {
 		openaiSupported = statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
 	}
 
-	anthropicSupported := false
+	anthropicSupported := entry.SupportsAnthropic()
 	if statusCode, err := m.statusFetcher(hash, anthropicMessagesURL); err == nil {
 		anthropicSupported = statusCode == http.StatusUnauthorized ||
 			statusCode == http.StatusForbidden ||

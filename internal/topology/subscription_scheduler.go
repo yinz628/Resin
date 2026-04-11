@@ -36,6 +36,10 @@ type SubscriptionScheduler struct {
 	// onSubRefreshSuccessNode is called for each active node hash after an
 	// explicit refresh/update successfully applies new subscription state.
 	onSubRefreshSuccessNode func(hash node.Hash)
+	// onSubBackgroundRefreshSuccessNode is called for each kept active node hash
+	// after a background refresh/update successfully applies new subscription
+	// state, allowing lightweight service-capability reconciliation.
+	onSubBackgroundRefreshSuccessNode func(hash node.Hash)
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -56,6 +60,9 @@ type SchedulerConfig struct {
 	// OnSubRefreshSuccessNode is fired for active nodes after an explicit
 	// successful refresh/update that requested immediate re-probe.
 	OnSubRefreshSuccessNode func(hash node.Hash)
+	// OnSubBackgroundRefreshSuccessNode is fired for kept active nodes after a
+	// successful background refresh/update.
+	OnSubBackgroundRefreshSuccessNode func(hash node.Hash)
 }
 
 // SubscriptionUpdateOptions controls side effects for a subscription refresh.
@@ -71,15 +78,16 @@ type SubscriptionUpdateOptions struct {
 func NewSubscriptionScheduler(cfg SchedulerConfig) *SubscriptionScheduler {
 	downloadCtx, cancelDownload := context.WithCancel(context.Background())
 	sched := &SubscriptionScheduler{
-		subManager:              cfg.SubManager,
-		pool:                    cfg.Pool,
-		downloader:              cfg.Downloader,
-		downloadCtx:             downloadCtx,
-		cancelDownload:          cancelDownload,
-		onSubUpdated:            cfg.OnSubUpdated,
-		onSubReenabledNode:      cfg.OnSubReenabledNode,
-		onSubRefreshSuccessNode: cfg.OnSubRefreshSuccessNode,
-		stopCh:                  make(chan struct{}),
+		subManager:                        cfg.SubManager,
+		pool:                              cfg.Pool,
+		downloader:                        cfg.Downloader,
+		downloadCtx:                       downloadCtx,
+		cancelDownload:                    cancelDownload,
+		onSubUpdated:                      cfg.OnSubUpdated,
+		onSubReenabledNode:                cfg.OnSubReenabledNode,
+		onSubRefreshSuccessNode:           cfg.OnSubRefreshSuccessNode,
+		onSubBackgroundRefreshSuccessNode: cfg.OnSubBackgroundRefreshSuccessNode,
+		stopCh:                            make(chan struct{}),
 	}
 	if cfg.Fetcher != nil {
 		sched.Fetcher = cfg.Fetcher
@@ -295,6 +303,7 @@ func (s *SubscriptionScheduler) UpdateSubscriptionWithOptions(
 	// 4. Diff, swap, add/remove — under lock.
 	applied := false
 	var refreshSuccessHashes []node.Hash
+	var backgroundRefreshSuccessHashes []node.Hash
 	sub.WithOpLock(func() {
 		// If refresh-input config changed while this attempt was in-flight, discard.
 		if sub.ConfigVersion() != attemptConfigVersion {
@@ -326,6 +335,9 @@ func (s *SubscriptionScheduler) UpdateSubscriptionWithOptions(
 		shouldTriggerImmediateProbe := options.TriggerImmediateProbe &&
 			sub.Enabled() &&
 			s.onSubRefreshSuccessNode != nil
+		shouldTriggerBackgroundServiceRefresh := !options.TriggerImmediateProbe &&
+			sub.Enabled() &&
+			s.onSubBackgroundRefreshSuccessNode != nil
 
 		sub.SwapManagedNodes(newManagedNodes)
 
@@ -343,6 +355,8 @@ func (s *SubscriptionScheduler) UpdateSubscriptionWithOptions(
 			s.pool.AddNodeFromSub(h, rawByHash[h], sub.ID)
 			if shouldTriggerImmediateProbe {
 				refreshSuccessHashes = append(refreshSuccessHashes, h)
+			} else if shouldTriggerBackgroundServiceRefresh {
+				backgroundRefreshSuccessHashes = append(backgroundRefreshSuccessHashes, h)
 			}
 		}
 		for _, h := range removed {
@@ -368,6 +382,11 @@ func (s *SubscriptionScheduler) UpdateSubscriptionWithOptions(
 	if options.TriggerImmediateProbe && s.onSubRefreshSuccessNode != nil {
 		for _, h := range refreshSuccessHashes {
 			s.onSubRefreshSuccessNode(h)
+		}
+	}
+	if !options.TriggerImmediateProbe && s.onSubBackgroundRefreshSuccessNode != nil {
+		for _, h := range backgroundRefreshSuccessHashes {
+			s.onSubBackgroundRefreshSuccessNode(h)
 		}
 	}
 }

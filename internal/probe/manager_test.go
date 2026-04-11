@@ -157,6 +157,85 @@ func TestProbeEgress_ServiceSupportTagsUnsupported(t *testing.T) {
 	}
 }
 
+func TestProbeEgress_ServiceSupportTagsPreservedOnStatusFetcherError(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-service-preserve-on-error"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"egress-service-preserve-on-error"}`), "sub1")
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+	entry.SetServiceCapabilities(true, true)
+
+	traceBody := []byte("fl=123\nip=203.0.113.1\nloc=US\nts=1234567890")
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+			return traceBody, 42 * time.Millisecond, nil
+		},
+		StatusFetcher: func(_ node.Hash, _ string) (int, error) {
+			return 0, errors.New("temporary status fetch failure")
+		},
+	})
+
+	mgr.probeEgress(hash, entry)
+
+	if !entry.SupportsOpenAI() {
+		t.Fatal("expected openai support tag to be preserved on status fetch error")
+	}
+	if !entry.SupportsAnthropic() {
+		t.Fatal("expected anthropic support tag to be preserved on status fetch error")
+	}
+}
+
+func TestProbeEgress_ServiceSupportTagsUpdatedOnTraceFailure(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-service-update-on-trace-failure"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"egress-service-update-on-trace-failure"}`), "sub1")
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+			return nil, 0, errors.New("cloudflare trace timeout")
+		},
+		StatusFetcher: func(_ node.Hash, url string) (int, error) {
+			switch url {
+			case openAIModelsURL:
+				return 401, nil
+			case anthropicMessagesURL:
+				return 405, nil
+			default:
+				return 0, errors.New("unexpected URL")
+			}
+		},
+	})
+
+	mgr.probeEgress(hash, entry)
+
+	if !entry.SupportsOpenAI() {
+		t.Fatal("expected openai support tag after trace failure")
+	}
+	if !entry.SupportsAnthropic() {
+		t.Fatal("expected anthropic support tag after trace failure")
+	}
+}
+
 // TestProbeEgress_Failure verifies that a failed egress probe calls
 // RecordResult(false) and accumulates failure count.
 func TestProbeEgress_Failure(t *testing.T) {
@@ -286,6 +365,90 @@ func TestProbeLatency_Failure(t *testing.T) {
 
 	if entry.FailureCount.Load() != 1 {
 		t.Fatalf("expected 1 failure, got %d", entry.FailureCount.Load())
+	}
+}
+
+func TestProbeLatency_ServiceSupportTags(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"latency-service-support"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"latency-service-support"}`), "sub1")
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+			return []byte("OK"), 50 * time.Millisecond, nil
+		},
+		StatusFetcher: func(_ node.Hash, url string) (int, error) {
+			switch url {
+			case openAIModelsURL:
+				return 401, nil
+			case anthropicMessagesURL:
+				return 405, nil
+			default:
+				return 0, errors.New("unexpected URL")
+			}
+		},
+	})
+
+	mgr.probeLatency(hash, entry, "https://www.gstatic.com/generate_204")
+
+	if !entry.SupportsOpenAI() {
+		t.Fatal("expected openai support tag after async latency probe")
+	}
+	if !entry.SupportsAnthropic() {
+		t.Fatal("expected anthropic support tag after async latency probe")
+	}
+}
+
+func TestProbeLatency_ServiceSupportTagsUpdatedOnFailure(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"latency-service-support-on-failure"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"latency-service-support-on-failure"}`), "sub1")
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+			return nil, 0, errors.New("latency target timeout")
+		},
+		StatusFetcher: func(_ node.Hash, url string) (int, error) {
+			switch url {
+			case openAIModelsURL:
+				return 401, nil
+			case anthropicMessagesURL:
+				return 405, nil
+			default:
+				return 0, errors.New("unexpected URL")
+			}
+		},
+	})
+
+	mgr.probeLatency(hash, entry, "https://www.gstatic.com/generate_204")
+
+	if !entry.SupportsOpenAI() {
+		t.Fatal("expected openai support tag after async latency failure")
+	}
+	if !entry.SupportsAnthropic() {
+		t.Fatal("expected anthropic support tag after async latency failure")
 	}
 }
 
@@ -492,6 +655,66 @@ func TestTriggerImmediateLatencyProbe_WithFetcher(t *testing.T) {
 
 	if !entry.HasLatency() {
 		t.Fatal("expected latency data after immediate latency probe")
+	}
+}
+
+func TestTriggerImmediateServiceProbe_WithStatusFetcher(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	sub := subscription.NewSubscription("sub1", "sub1", "url", true, false)
+	subMgr.Register(sub)
+
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"trigger-service"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"trigger-service"}`), "sub1")
+	sub.ManagedNodes().StoreNode(hash, subscription.ManagedNode{Tags: []string{"tag"}})
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	var calls atomic.Int32
+	done := make(chan struct{})
+	mgr := NewProbeManager(ProbeConfig{
+		Pool:        pool,
+		Concurrency: 1,
+		StatusFetcher: func(_ node.Hash, url string) (int, error) {
+			switch url {
+			case openAIModelsURL:
+				calls.Add(1)
+				return 401, nil
+			case anthropicMessagesURL:
+				if calls.Add(1) == 2 {
+					close(done)
+				}
+				return 405, nil
+			default:
+				return 0, errors.New("unexpected URL")
+			}
+		},
+	})
+	mgr.Start()
+	defer mgr.Stop()
+
+	mgr.TriggerImmediateServiceProbe(hash)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for immediate service probe")
+	}
+
+	if !entry.SupportsOpenAI() {
+		t.Fatal("expected openai support tag after immediate service probe")
+	}
+	if !entry.SupportsAnthropic() {
+		t.Fatal("expected anthropic support tag after immediate service probe")
 	}
 }
 
@@ -935,6 +1158,95 @@ func TestProbeLatencySync_ReturnsEWMAFromNormalizedDomain(t *testing.T) {
 	}
 	if stats.Ewma != 80*time.Millisecond {
 		t.Fatalf("stored EWMA = %v, want %v", stats.Ewma, 80*time.Millisecond)
+	}
+}
+
+func TestProbeEgressSync_UpdatesServiceSupportTagsOnTraceFailure(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-sync-service-update-on-trace-failure"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"egress-sync-service-update-on-trace-failure"}`), "sub1")
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+			return nil, 0, errors.New("cloudflare trace timeout")
+		},
+		StatusFetcher: func(_ node.Hash, url string) (int, error) {
+			switch url {
+			case openAIModelsURL:
+				return 401, nil
+			case anthropicMessagesURL:
+				return 405, nil
+			default:
+				return 0, errors.New("unexpected URL")
+			}
+		},
+	})
+
+	if _, err := mgr.ProbeEgressSync(hash); err == nil {
+		t.Fatal("expected ProbeEgressSync to report trace failure")
+	}
+	if !entry.SupportsOpenAI() {
+		t.Fatal("expected openai support tag after sync trace failure")
+	}
+	if !entry.SupportsAnthropic() {
+		t.Fatal("expected anthropic support tag after sync trace failure")
+	}
+}
+
+func TestProbeLatencySync_UpdatesServiceSupportTagsOnLatencyFailure(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"latency-sync-service-update-on-failure"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"latency-sync-service-update-on-failure"}`), "sub1")
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+			return nil, 0, errors.New("latency target timeout")
+		},
+		StatusFetcher: func(_ node.Hash, url string) (int, error) {
+			switch url {
+			case openAIModelsURL:
+				return 401, nil
+			case anthropicMessagesURL:
+				return 405, nil
+			default:
+				return 0, errors.New("unexpected URL")
+			}
+		},
+		LatencyTestURL: func() string {
+			return "https://www.gstatic.com/generate_204"
+		},
+	})
+
+	if _, err := mgr.ProbeLatencySync(hash); err == nil {
+		t.Fatal("expected ProbeLatencySync to report latency failure")
+	}
+	if !entry.SupportsOpenAI() {
+		t.Fatal("expected openai support tag after sync latency failure")
+	}
+	if !entry.SupportsAnthropic() {
+		t.Fatal("expected anthropic support tag after sync latency failure")
 	}
 }
 
