@@ -2346,6 +2346,67 @@ func TestParseGeneralSubscription_PlainHTTPProxyLinesIPv6(t *testing.T) {
 	}
 }
 
+func TestParseGeneralSubscriptionWithOptions_PlainProxyLinesAsSOCKS5(t *testing.T) {
+	data := []byte(`
+1.2.3.4:1080
+5.6.7.8:3128:user-a:pass-a
+`)
+
+	nodes, err := ParseGeneralSubscriptionWithOptions(data, ParseOptions{
+		DefaultPlainProxyProtocol: PlainProxyProtocolSocks5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 parsed nodes, got %d", len(nodes))
+	}
+
+	first := parseNodeRaw(t, nodes[0].RawOptions)
+	second := parseNodeRaw(t, nodes[1].RawOptions)
+
+	if got := first["type"]; got != "socks" {
+		t.Fatalf("expected first type socks, got %v", got)
+	}
+	if got := second["type"]; got != "socks" {
+		t.Fatalf("expected second type socks, got %v", got)
+	}
+	if got := second["username"]; got != "user-a" {
+		t.Fatalf("expected second username user-a, got %v", got)
+	}
+	if got := second["password"]; got != "pass-a" {
+		t.Fatalf("expected second password pass-a, got %v", got)
+	}
+}
+
+func TestParseGeneralSubscriptionWithOptions_PlainProxyLinesAsHTTPS(t *testing.T) {
+	data := []byte(`
+1.2.3.4:443
+`)
+
+	nodes, err := ParseGeneralSubscriptionWithOptions(data, ParseOptions{
+		DefaultPlainProxyProtocol: PlainProxyProtocolHTTPS,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 parsed node, got %d", len(nodes))
+	}
+
+	first := parseNodeRaw(t, nodes[0].RawOptions)
+	if got := first["type"]; got != "http" {
+		t.Fatalf("expected type http, got %v", got)
+	}
+	tls, ok := first["tls"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tls object, got %T", first["tls"])
+	}
+	if got := tls["enabled"]; got != true {
+		t.Fatalf("expected tls.enabled true, got %v", got)
+	}
+}
+
 func TestParseGeneralSubscription_Base64WrappedURIs(t *testing.T) {
 	plain := "ss://YWVzLTEyOC1nY206cGFzcw==@1.1.1.1:8388#SS-Node"
 	encoded := base64.StdEncoding.EncodeToString([]byte(plain))

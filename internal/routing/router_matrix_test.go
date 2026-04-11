@@ -275,7 +275,9 @@ func TestRouteRequest_SameIPRotationMissRecreatesLease(t *testing.T) {
 		return NewPlatformRoutingState(), false
 	})
 
-	oldExpiry := time.Now().Add(time.Hour).UnixNano()
+	// Use a significantly different expiry from StickyTTL to avoid relying on
+	// wall-clock tick granularity when asserting recreation behavior.
+	oldExpiry := time.Now().Add(24 * time.Hour).UnixNano()
 	oldLease := Lease{
 		NodeHash:       currentHash,
 		EgressIP:       currentEntry.GetEgressIP(),
@@ -303,7 +305,10 @@ func TestRouteRequest_SameIPRotationMissRecreatesLease(t *testing.T) {
 		t.Fatalf("lease node not updated: got=%s want=%s", newLease.NodeHash.Hex(), replacementHash.Hex())
 	}
 	if newLease.ExpiryNs == oldExpiry {
-		t.Fatalf("recreated lease must have new expiry, still got old %d", oldExpiry)
+		t.Fatalf("recreated lease must not reuse old expiry, still got old %d", oldExpiry)
+	}
+	if newLease.CreatedAtNs == 0 {
+		t.Fatal("recreated lease must refresh CreatedAtNs")
 	}
 	if got := state.IPLoadStats.Get(oldLease.EgressIP); got != 0 {
 		t.Fatalf("old egress ip load should be 0, got %d", got)

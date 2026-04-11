@@ -350,6 +350,9 @@ func newTopologyRuntime(
 		SubManager: subManager,
 		Pool:       pool,
 		Downloader: downloader,
+		OnSubUpdated: func(sub *subscription.Subscription) {
+			persistSubscriptionRuntimeState(engine, sub)
+		},
 		OnSubReenabledNode: func(hash node.Hash) {
 			outboundMgr.EnsureNodeOutbound(hash)
 			probeMgr.TriggerImmediateEgressProbe(hash)
@@ -389,6 +392,39 @@ func markNodeRemovedDirty(engine *state.StateEngine, hash node.Hash, entry *node
 	})
 }
 
+func persistSubscriptionRuntimeState(engine *state.StateEngine, sub *subscription.Subscription) {
+	if engine == nil || sub == nil {
+		return
+	}
+
+	updatedAtNs := sub.LastCheckedNs.Load()
+	if updatedAtNs <= 0 {
+		if lastUpdated := sub.LastUpdatedNs.Load(); lastUpdated > 0 {
+			updatedAtNs = lastUpdated
+		}
+	}
+	if updatedAtNs <= 0 {
+		updatedAtNs = time.Now().UnixNano()
+	}
+
+	err := engine.UpsertSubscription(model.Subscription{
+		ID:                        sub.ID,
+		Name:                      sub.Name(),
+		SourceType:                sub.SourceType(),
+		URL:                       sub.URL(),
+		Content:                   sub.Content(),
+		UpdateIntervalNs:          sub.UpdateIntervalNs(),
+		Enabled:                   sub.Enabled(),
+		Ephemeral:                 sub.Ephemeral(),
+		EphemeralNodeEvictDelayNs: sub.EphemeralNodeEvictDelayNs(),
+		CreatedAtNs:               sub.CreatedAtNs,
+		UpdatedAtNs:               updatedAtNs,
+	})
+	if err != nil {
+		log.Printf("Warning: persist subscription runtime state for %s failed: %v", sub.ID, err)
+	}
+}
+
 func bootstrapTopology(
 	engine *state.StateEngine,
 	subManager *topology.SubscriptionManager,
@@ -407,6 +443,10 @@ func bootstrapTopology(
 		sub.SetEphemeralNodeEvictDelayNs(ms.EphemeralNodeEvictDelayNs)
 		sub.CreatedAtNs = ms.CreatedAtNs
 		sub.UpdatedAtNs = ms.UpdatedAtNs
+		if ms.UpdatedAtNs > 0 {
+			sub.LastCheckedNs.Store(ms.UpdatedAtNs)
+			sub.LastUpdatedNs.Store(ms.UpdatedAtNs)
+		}
 		subManager.Register(sub)
 	}
 	log.Printf("Loaded %d subscriptions from state.db", len(dbSubs))

@@ -131,6 +131,9 @@ type Subscription struct {
 	LastCheckedNs atomic.Int64
 	LastUpdatedNs atomic.Int64
 	LastError     atomic.Pointer[string]
+	// lastAppliedAttemptID tracks the latest scheduler attempt that actually
+	// mutated runtime subscription state (success or failure path).
+	lastAppliedAttemptID atomic.Int64
 
 	// managedNodes is the subscription's node view: Hash → ManagedNode.
 	// Swapped atomically on subscription update.
@@ -197,6 +200,16 @@ func (s *Subscription) Content() string {
 // ConfigVersion returns the scheduler input config version.
 func (s *Subscription) ConfigVersion() int64 {
 	return s.configVersion.Load()
+}
+
+// LastAppliedAttemptID returns the latest applied scheduler attempt id.
+func (s *Subscription) LastAppliedAttemptID() int64 {
+	return s.lastAppliedAttemptID.Load()
+}
+
+// SetLastAppliedAttemptID stores the latest applied scheduler attempt id.
+func (s *Subscription) SetLastAppliedAttemptID(id int64) {
+	s.lastAppliedAttemptID.Store(id)
 }
 
 // UpdateIntervalNs returns the configured update interval in nanoseconds (thread-safe).

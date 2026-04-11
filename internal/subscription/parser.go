@@ -57,13 +57,61 @@ type parseAttempt struct {
 	recognized bool
 }
 
+type PlainProxyProtocol string
+
+const (
+	PlainProxyProtocolAuto   PlainProxyProtocol = "auto"
+	PlainProxyProtocolHTTP   PlainProxyProtocol = "http"
+	PlainProxyProtocolHTTPS  PlainProxyProtocol = "https"
+	PlainProxyProtocolSocks5 PlainProxyProtocol = "socks5"
+)
+
+const plainProxyProtocolURLFragmentKey = "resin_plain_protocol"
+
+type ParseOptions struct {
+	// DefaultPlainProxyProtocol controls how plain IP:PORT(/:USER:PASS) lines
+	// are interpreted when they do not include an explicit URI scheme.
+	// Supported values: auto/http/https/socks5.
+	DefaultPlainProxyProtocol PlainProxyProtocol
+}
+
+func DefaultParseOptions() ParseOptions {
+	return ParseOptions{
+		DefaultPlainProxyProtocol: PlainProxyProtocolAuto,
+	}
+}
+
+func normalizeParseOptions(options ParseOptions) ParseOptions {
+	options.DefaultPlainProxyProtocol = normalizePlainProxyProtocol(options.DefaultPlainProxyProtocol)
+	return options
+}
+
+func normalizePlainProxyProtocol(raw PlainProxyProtocol) PlainProxyProtocol {
+	switch strings.ToLower(strings.TrimSpace(string(raw))) {
+	case string(PlainProxyProtocolHTTP):
+		return PlainProxyProtocolHTTP
+	case string(PlainProxyProtocolHTTPS):
+		return PlainProxyProtocolHTTPS
+	case string(PlainProxyProtocolSocks5):
+		return PlainProxyProtocolSocks5
+	default:
+		return PlainProxyProtocolAuto
+	}
+}
+
 // GeneralSubscriptionParser parses common subscription formats and extracts
 // sing-box outbound nodes.
-type GeneralSubscriptionParser struct{}
+type GeneralSubscriptionParser struct {
+	options ParseOptions
+}
 
 // NewGeneralSubscriptionParser creates a general multi-format parser.
 func NewGeneralSubscriptionParser() *GeneralSubscriptionParser {
-	return &GeneralSubscriptionParser{}
+	return &GeneralSubscriptionParser{options: DefaultParseOptions()}
+}
+
+func NewGeneralSubscriptionParserWithOptions(options ParseOptions) *GeneralSubscriptionParser {
+	return &GeneralSubscriptionParser{options: normalizeParseOptions(options)}
 }
 
 // ParseGeneralSubscription parses sing-box JSON / Clash JSON|YAML / URI-line
@@ -74,6 +122,10 @@ func ParseGeneralSubscription(data []byte) ([]ParsedNode, error) {
 	return NewGeneralSubscriptionParser().Parse(data)
 }
 
+func ParseGeneralSubscriptionWithOptions(data []byte, options ParseOptions) ([]ParsedNode, error) {
+	return NewGeneralSubscriptionParserWithOptions(options).Parse(data)
+}
+
 // Parse parses subscription content and returns supported outbound nodes.
 func (p *GeneralSubscriptionParser) Parse(data []byte) ([]ParsedNode, error) {
 	normalized := normalizeInput(data)
@@ -81,7 +133,7 @@ func (p *GeneralSubscriptionParser) Parse(data []byte) ([]ParsedNode, error) {
 		return nil, fmt.Errorf("subscription: empty response")
 	}
 
-	attempt, err := parseSubscriptionContent(normalized)
+	attempt, err := parseSubscriptionContent(normalized, p.options)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +142,7 @@ func (p *GeneralSubscriptionParser) Parse(data []byte) ([]ParsedNode, error) {
 	}
 
 	if decodedText, ok := tryDecodeBase64ToText(normalized); ok {
-		decodedAttempt, decodedErr := parseSubscriptionContent([]byte(decodedText))
+		decodedAttempt, decodedErr := parseSubscriptionContent([]byte(decodedText), p.options)
 		if decodedErr != nil {
 			return nil, decodedErr
 		}
@@ -102,7 +154,7 @@ func (p *GeneralSubscriptionParser) Parse(data []byte) ([]ParsedNode, error) {
 	return nil, fmt.Errorf("subscription: unsupported format or no supported nodes found")
 }
 
-func parseSubscriptionContent(data []byte) (parseAttempt, error) {
+func parseSubscriptionContent(data []byte, options ParseOptions) (parseAttempt, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
 		return parseAttempt{}, nil
@@ -131,7 +183,7 @@ func parseSubscriptionContent(data []byte) (parseAttempt, error) {
 		return parseAttempt{nodes: nodes, recognized: true}, nil
 	}
 
-	if nodes, recognized := parseURILineSubscription(text); recognized {
+	if nodes, recognized := parseURILineSubscription(text, options); recognized {
 		return parseAttempt{nodes: nodes, recognized: true}, nil
 	}
 
@@ -1890,7 +1942,7 @@ func hasLetter(value string) bool {
 	return false
 }
 
-func parseURILineSubscription(text string) ([]ParsedNode, bool) {
+func parseURILineSubscription(text string, options ParseOptions) ([]ParsedNode, bool) {
 	var nodes []ParsedNode
 	recognized := false
 	for _, rawLine := range strings.Split(text, "\n") {
@@ -1953,7 +2005,7 @@ func parseURILineSubscription(text string) ([]ParsedNode, bool) {
 			recognized = true
 			node, ok = parseProxyURI(line)
 		default:
-			node, ok = parsePlainHTTPProxyLine(line)
+			node, ok = parsePlainProxyLine(line, options.DefaultPlainProxyProtocol)
 			if ok {
 				recognized = true
 			}
@@ -1969,15 +2021,15 @@ func parseURILineSubscription(text string) ([]ParsedNode, bool) {
 	return nodes, recognized
 }
 
-func parsePlainHTTPProxyLine(line string) (ParsedNode, bool) {
+func parsePlainProxyLine(line string, plainProtocol PlainProxyProtocol) (ParsedNode, bool) {
 	if strings.Contains(line, "://") {
 		return ParsedNode{}, false
 	}
 
-	if node, ok := parseHTTPProxyIPPortUserPass(line); ok {
+	if node, ok := parseHTTPProxyIPPortUserPass(line, plainProtocol); ok {
 		return node, true
 	}
-	return parseHTTPProxyIPPort(line)
+	return parseHTTPProxyIPPort(line, plainProtocol)
 }
 
 func parseProxyURI(uri string) (ParsedNode, bool) {
@@ -2366,36 +2418,59 @@ func hasOnlyAllowedQueryKeys(values url.Values, allowedKeys ...string) bool {
 	}
 	return true
 }
-func parseHTTPProxyIPPort(line string) (ParsedNode, bool) {
+func parseHTTPProxyIPPort(line string, plainProtocol PlainProxyProtocol) (ParsedNode, bool) {
 	server, port, ok := parseHostPort(line)
 	if !ok || net.ParseIP(server) == nil {
 		return ParsedNode{}, false
 	}
+	nodeType, tlsEnabled := plainProxyOutboundType(plainProtocol)
 
 	outbound := map[string]any{
-		"type":        "http",
-		"tag":         defaultTag("", "http", server, port),
+		"type":        nodeType,
+		"tag":         defaultTag("", nodeType, server, port),
 		"server":      server,
 		"server_port": port,
+	}
+	if tlsEnabled {
+		outbound["tls"] = map[string]any{
+			"enabled": true,
+		}
 	}
 	return buildParsedNode(outbound)
 }
 
-func parseHTTPProxyIPPortUserPass(line string) (ParsedNode, bool) {
+func parseHTTPProxyIPPortUserPass(line string, plainProtocol PlainProxyProtocol) (ParsedNode, bool) {
 	server, port, username, password, ok := parseIPPortUserPass(line)
 	if !ok {
 		return ParsedNode{}, false
 	}
+	nodeType, tlsEnabled := plainProxyOutboundType(plainProtocol)
 
 	outbound := map[string]any{
-		"type":        "http",
-		"tag":         defaultTag("", "http", server, port),
+		"type":        nodeType,
+		"tag":         defaultTag("", nodeType, server, port),
 		"server":      server,
 		"server_port": port,
 		"username":    username,
 		"password":    password,
 	}
+	if tlsEnabled {
+		outbound["tls"] = map[string]any{
+			"enabled": true,
+		}
+	}
 	return buildParsedNode(outbound)
+}
+
+func plainProxyOutboundType(plainProtocol PlainProxyProtocol) (nodeType string, tlsEnabled bool) {
+	switch normalizePlainProxyProtocol(plainProtocol) {
+	case PlainProxyProtocolSocks5:
+		return "socks", false
+	case PlainProxyProtocolHTTPS:
+		return "http", true
+	default:
+		return "http", false
+	}
 }
 
 func parseIPPortUserPass(line string) (string, uint64, string, string, bool) {
@@ -4668,6 +4743,26 @@ func uriPortOrDefault(u *url.URL, fallback uint64) uint64 {
 		return fallback
 	}
 	return parsed
+}
+
+func ParseOptionsFromSubscriptionURL(rawURL string) ParseOptions {
+	options := DefaultParseOptions()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return options
+	}
+	fragment := strings.TrimSpace(strings.TrimPrefix(u.Fragment, "?"))
+	if fragment == "" {
+		return options
+	}
+	values, err := url.ParseQuery(fragment)
+	if err != nil {
+		return options
+	}
+	if rawProtocol := strings.TrimSpace(values.Get(plainProxyProtocolURLFragmentKey)); rawProtocol != "" {
+		options.DefaultPlainProxyProtocol = normalizePlainProxyProtocol(PlainProxyProtocol(rawProtocol))
+	}
+	return options
 }
 
 func defaultTag(tag string, proto string, server string, port uint64) string {

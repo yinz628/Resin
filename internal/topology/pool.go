@@ -425,6 +425,9 @@ func (p *GlobalNodePool) notifyAllPlatformsDirty(hash node.Hash) {
 	getEntry := func(h node.Hash) (*node.NodeEntry, bool) {
 		return p.nodes.Load(h)
 	}
+	poolRange := func(fn func(node.Hash, *node.NodeEntry) bool) {
+		p.nodes.Range(fn)
+	}
 
 	workers := runtime.GOMAXPROCS(0)
 	if workers < 1 {
@@ -442,7 +445,7 @@ func (p *GlobalNodePool) notifyAllPlatformsDirty(hash node.Hash) {
 		go func(plat *platform.Platform) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			plat.NotifyDirty(hash, getEntry, subLookup, p.geoLookup)
+			plat.NotifyDirtyWithPoolRange(hash, getEntry, poolRange, subLookup, p.geoLookup)
 		}(plat)
 	}
 	wg.Wait()

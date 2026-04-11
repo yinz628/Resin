@@ -234,6 +234,48 @@ func TestScheduler_UpdateSubscription_LocalSubscription_ParseFailure(t *testing.
 	}
 }
 
+func TestScheduler_UpdateSubscription_RemoteURLFragmentSetsPlainProxyProtocol(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "http://example.com/sub#resin_plain_protocol=socks5", true, false)
+	subMgr.Register(sub)
+
+	pool := newTestPool(subMgr)
+	fetcher := makeMockFetcher([]byte("1.2.3.4:1080\n"), nil)
+	sched := newTestScheduler(subMgr, pool, fetcher)
+
+	sched.UpdateSubscription(sub)
+
+	if sub.GetLastError() != "" {
+		t.Fatalf("unexpected last error: %q", sub.GetLastError())
+	}
+	if pool.Size() != 1 {
+		t.Fatalf("expected 1 node in pool, got %d", pool.Size())
+	}
+
+	var firstHash node.Hash
+	found := false
+	sub.ManagedNodes().RangeNodes(func(h node.Hash, _ subscription.ManagedNode) bool {
+		firstHash = h
+		found = true
+		return false
+	})
+	if !found {
+		t.Fatal("expected at least one managed hash")
+	}
+
+	entry, ok := pool.GetEntry(firstHash)
+	if !ok {
+		t.Fatal("expected node entry in pool")
+	}
+	var outbound map[string]any
+	if err := json.Unmarshal(entry.RawOptions, &outbound); err != nil {
+		t.Fatalf("unmarshal outbound: %v", err)
+	}
+	if got := outbound["type"]; got != "socks" {
+		t.Fatalf("expected parsed type socks, got %v", got)
+	}
+}
+
 // --- Test: Swap-before-add/remove ordering ---
 
 func TestScheduler_UpdateSubscription_SwapBeforePoolMutation(t *testing.T) {
@@ -733,6 +775,73 @@ func TestScheduler_Tick_UpdatesDueSubscriptionsInParallel(t *testing.T) {
 	if got := started.Load(); got != 2 {
 		t.Fatalf("expected 2 fetch attempts for due subscriptions, got %d", got)
 	}
+}
+
+func TestScheduler_RefreshDueNow_UpdatesOnlyDueSubscriptions(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+
+	due := subscription.NewSubscription("s1", "Due", "http://example.com/due", true, false)
+	due.SetFetchConfig(due.URL(), int64(time.Hour))
+	due.LastCheckedNs.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	subMgr.Register(due)
+
+	notDue := subscription.NewSubscription("s2", "NotDue", "http://example.com/not-due", true, false)
+	notDue.SetFetchConfig(notDue.URL(), int64(time.Hour))
+	notDue.LastCheckedNs.Store(time.Now().UnixNano())
+	subMgr.Register(notDue)
+
+	pool := newTestPool(subMgr)
+	var started atomic.Int32
+	fetcher := func(url string) ([]byte, error) {
+		started.Add(1)
+		return makeSubscriptionJSON(), nil
+	}
+	sched := newTestScheduler(subMgr, pool, fetcher)
+
+	sched.RefreshDueNow()
+
+	if got := started.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 refresh for due subscriptions, got %d", got)
+	}
+}
+
+func TestScheduler_RefreshDueNowAsync_ReturnsImmediately(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "AsyncDue", "http://example.com/async", true, false)
+	sub.SetFetchConfig(sub.URL(), int64(time.Hour))
+	sub.LastCheckedNs.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	subMgr.Register(sub)
+
+	pool := newTestPool(subMgr)
+	fetchStarted := make(chan struct{})
+	releaseFetch := make(chan struct{})
+	fetcher := func(url string) ([]byte, error) {
+		close(fetchStarted)
+		<-releaseFetch
+		return makeSubscriptionJSON(), nil
+	}
+	sched := newTestScheduler(subMgr, pool, fetcher)
+
+	returned := make(chan struct{})
+	go func() {
+		sched.RefreshDueNowAsync()
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("RefreshDueNowAsync should return immediately")
+	}
+
+	select {
+	case <-fetchStarted:
+	case <-time.After(time.Second):
+		t.Fatal("background due-refresh did not start")
+	}
+
+	close(releaseFetch)
+	sched.Stop()
 }
 
 func TestScheduler_ForceRefreshAllAsync_ReturnsImmediately(t *testing.T) {

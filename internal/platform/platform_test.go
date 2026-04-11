@@ -23,8 +23,12 @@ func makeFullyRoutableEntry(hash node.Hash, subIDs ...string) *node.NodeEntry {
 	})
 	ob := testutil.NewNoopOutbound()
 	e.Outbound.Store(&ob)
-	e.SetEgressIP(netip.MustParseAddr("1.2.3.4"))
+	e.SetEgressIP(testEgressIPForHash(hash))
 	return e
+}
+
+func testEgressIPForHash(hash node.Hash) netip.Addr {
+	return netip.AddrFrom4([4]byte{10, hash[0], hash[1], hash[2]})
 }
 
 func alwaysLookup(subID string, hash node.Hash) (string, bool, []string, bool) {
@@ -370,5 +374,101 @@ func TestPlatform_FullRebuild_ClearsOld(t *testing.T) {
 	}
 	if p.View().Contains(h2) {
 		t.Fatal("h2 should have been removed by rebuild")
+	}
+}
+
+func TestPlatform_FullRebuild_DeduplicatesByEgressIP(t *testing.T) {
+	p := NewPlatform("p1", "Test", nil, nil)
+	p.DeduplicateEgressIP = true
+
+	h1 := makeHash(`{"type":"ss","n":1}`)
+	h2 := makeHash(`{"type":"ss","n":2}`)
+	h3 := makeHash(`{"type":"ss","n":3}`)
+	e1 := makeFullyRoutableEntry(h1, "sub1")
+	e2 := makeFullyRoutableEntry(h2, "sub1")
+	e3 := makeFullyRoutableEntry(h3, "sub1")
+
+	sameIP := netip.MustParseAddr("1.2.3.4")
+	e1.SetEgressIP(sameIP)
+	e2.SetEgressIP(sameIP)
+	e3.SetEgressIP(netip.MustParseAddr("5.6.7.8"))
+
+	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
+		fn(h1, e1)
+		fn(h2, e2)
+		fn(h3, e3)
+	}, alwaysLookup, usGeoLookup)
+
+	if p.View().Size() != 2 {
+		t.Fatalf("expected 2 deduplicated routable nodes, got %d", p.View().Size())
+	}
+	winner := h1
+	loser := h2
+	if !isHashLess(h1, h2) {
+		winner = h2
+		loser = h1
+	}
+	if !p.View().Contains(winner) {
+		t.Fatal("expected deterministic winner hash to remain in view")
+	}
+	if p.View().Contains(loser) {
+		t.Fatal("expected duplicate egress-ip node to be excluded from view")
+	}
+	if !p.View().Contains(h3) {
+		t.Fatal("expected distinct egress-ip node to remain in view")
+	}
+}
+
+func TestPlatform_NotifyDirtyWithPoolRange_PromotesFallbackForSameEgressIP(t *testing.T) {
+	p := NewPlatform("p1", "Test", nil, nil)
+	p.DeduplicateEgressIP = true
+
+	h1 := makeHash(`{"type":"ss","n":1}`)
+	h2 := makeHash(`{"type":"ss","n":2}`)
+	e1 := makeFullyRoutableEntry(h1, "sub1")
+	e2 := makeFullyRoutableEntry(h2, "sub1")
+	sharedIP := netip.MustParseAddr("9.9.9.9")
+	e1.SetEgressIP(sharedIP)
+	e2.SetEgressIP(sharedIP)
+
+	store := map[node.Hash]*node.NodeEntry{
+		h1: e1,
+		h2: e2,
+	}
+	getEntry := func(hash node.Hash) (*node.NodeEntry, bool) {
+		entry, ok := store[hash]
+		return entry, ok
+	}
+	poolRange := func(fn func(node.Hash, *node.NodeEntry) bool) {
+		for h, e := range store {
+			if !fn(h, e) {
+				return
+			}
+		}
+	}
+
+	p.FullRebuild(poolRange, alwaysLookup, usGeoLookup)
+	if p.View().Size() != 1 {
+		t.Fatalf("expected 1 node after initial dedupe rebuild, got %d", p.View().Size())
+	}
+
+	owner := h1
+	fallback := h2
+	if !isHashLess(h1, h2) {
+		owner = h2
+		fallback = h1
+	}
+	if !p.View().Contains(owner) {
+		t.Fatal("expected initial owner to be selected")
+	}
+
+	delete(store, owner)
+	p.NotifyDirtyWithPoolRange(owner, getEntry, poolRange, alwaysLookup, usGeoLookup)
+
+	if p.View().Size() != 1 {
+		t.Fatalf("expected 1 node after owner removal fallback, got %d", p.View().Size())
+	}
+	if !p.View().Contains(fallback) {
+		t.Fatal("expected fallback node with same egress IP to be promoted")
 	}
 }

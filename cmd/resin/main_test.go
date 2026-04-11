@@ -172,6 +172,47 @@ func TestBootstrapTopology_DefaultPlatformCreationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestBootstrapTopology_RestoreSubscriptionRuntimeTimestampsFromUpdatedAt(t *testing.T) {
+	engine, closer, err := state.PersistenceBootstrap(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	lastChecked := time.Now().Add(-2 * time.Hour).UnixNano()
+	if err := engine.UpsertSubscription(model.Subscription{
+		ID:                        "sub-ts-1",
+		Name:                      "sub-ts-1",
+		SourceType:                "remote",
+		URL:                       "https://example.com/sub-ts-1",
+		Content:                   "",
+		UpdateIntervalNs:          int64(24 * time.Hour),
+		Enabled:                   true,
+		Ephemeral:                 false,
+		EphemeralNodeEvictDelayNs: int64(72 * time.Hour),
+		CreatedAtNs:               lastChecked - int64(time.Hour),
+		UpdatedAtNs:               lastChecked,
+	}); err != nil {
+		t.Fatalf("UpsertSubscription: %v", err)
+	}
+
+	subManager, pool := newBootstrapTestRuntime(config.NewDefaultRuntimeConfig())
+	if err := bootstrapTopology(engine, subManager, pool, newDefaultPlatformEnvConfig()); err != nil {
+		t.Fatalf("bootstrapTopology: %v", err)
+	}
+
+	sub, ok := subManager.Get("sub-ts-1")
+	if !ok {
+		t.Fatal("expected subscription sub-ts-1 loaded from persistence")
+	}
+	if got := sub.LastCheckedNs.Load(); got != lastChecked {
+		t.Fatalf("LastCheckedNs: got %d, want %d", got, lastChecked)
+	}
+	if got := sub.LastUpdatedNs.Load(); got != lastChecked {
+		t.Fatalf("LastUpdatedNs: got %d, want %d", got, lastChecked)
+	}
+}
+
 func TestEnsureDefaultAccountHeaderRule_CreatesFallbackWhenMissing(t *testing.T) {
 	engine, closer, err := state.PersistenceBootstrap(t.TempDir(), t.TempDir())
 	if err != nil {

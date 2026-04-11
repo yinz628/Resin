@@ -5,6 +5,7 @@ import (
 	"log"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Resinat/Resin/internal/netutil"
@@ -35,6 +36,9 @@ type SubscriptionScheduler struct {
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
+	// attemptSeq provides strict monotonic ordering for refresh attempts so
+	// stale in-flight results can be ignored without wall-clock races.
+	attemptSeq atomic.Int64
 }
 
 // SchedulerConfig configures the SubscriptionScheduler.
@@ -121,14 +125,40 @@ func (s *SubscriptionScheduler) ForceRefreshAllAsync() {
 	}()
 }
 
+// RefreshDueNow updates only enabled subscriptions that are currently due
+// (same due rule as tick). Useful at startup when runtime state was restored.
+func (s *SubscriptionScheduler) RefreshDueNow() {
+	select {
+	case <-s.stopCh:
+		return
+	default:
+	}
+	now := time.Now().UnixNano()
+	subsToRefresh := s.collectDueSubscriptions(now)
+	s.runUpdatesWithWorkerLimit(subsToRefresh)
+}
+
+// RefreshDueNowAsync triggers RefreshDueNow in a background goroutine.
+// The goroutine is tracked by scheduler waitgroup so Stop() waits for exit.
+func (s *SubscriptionScheduler) RefreshDueNowAsync() {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.RefreshDueNow()
+	}()
+}
+
 func (s *SubscriptionScheduler) tick() {
 	select {
 	case <-s.stopCh:
 		return
 	default:
 	}
+	dueSubs := s.collectDueSubscriptions(time.Now().UnixNano())
+	s.runUpdatesWithWorkerLimit(dueSubs)
+}
 
-	now := time.Now().UnixNano()
+func (s *SubscriptionScheduler) collectDueSubscriptions(now int64) []*subscription.Subscription {
 	dueSubs := make([]*subscription.Subscription, 0, s.subManager.Size())
 	s.subManager.Range(func(id string, sub *subscription.Subscription) bool {
 		select {
@@ -145,7 +175,7 @@ func (s *SubscriptionScheduler) tick() {
 		}
 		return true
 	})
-	s.runUpdatesWithWorkerLimit(dueSubs)
+	return dueSubs
 }
 
 func (s *SubscriptionScheduler) runUpdatesWithWorkerLimit(subs []*subscription.Subscription) {
@@ -191,11 +221,15 @@ func (s *SubscriptionScheduler) runUpdatesWithWorkerLimit(subs []*subscription.S
 // applies the result under WithSubLock. This keeps the lock scope narrow
 // (no I/O under lock) while still preventing concurrent diff/apply races.
 func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscription) {
-	attemptStartedNs := time.Now().UnixNano()
+	attemptID := s.attemptSeq.Add(1)
 	attemptURL := sub.URL()
 	attemptSourceType := sub.SourceType()
 	attemptContent := sub.Content()
 	attemptConfigVersion := sub.ConfigVersion()
+	parseOptions := subscription.DefaultParseOptions()
+	if attemptSourceType == subscription.SourceTypeRemote {
+		parseOptions = subscription.ParseOptionsFromSubscriptionURL(attemptURL)
+	}
 
 	// 1. Fetch/read content (lock-free).
 	var (
@@ -207,15 +241,15 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 	} else {
 		body, err = s.Fetcher(attemptURL)
 		if err != nil {
-			s.handleUpdateFailure(sub, attemptStartedNs, attemptConfigVersion, "fetch", err)
+			s.handleUpdateFailure(sub, attemptID, attemptConfigVersion, "fetch", err)
 			return
 		}
 	}
 
 	// 2. Parse (lock-free).
-	parsed, err := subscription.ParseGeneralSubscription(body)
+	parsed, err := subscription.ParseGeneralSubscriptionWithOptions(body, parseOptions)
 	if err != nil {
-		s.handleUpdateFailure(sub, attemptStartedNs, attemptConfigVersion, "parse", err)
+		s.handleUpdateFailure(sub, attemptID, attemptConfigVersion, "parse", err)
 		return
 	}
 
@@ -239,9 +273,9 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 		if sub.ConfigVersion() != attemptConfigVersion {
 			return
 		}
-		// Stale success guard: if a newer successful update has already landed,
+		// Stale success guard: if a newer attempt has already been applied,
 		// discard this older attempt to avoid rolling state backward.
-		if sub.LastUpdatedNs.Load() > attemptStartedNs {
+		if sub.LastAppliedAttemptID() > attemptID {
 			return
 		}
 
@@ -284,6 +318,7 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 		sub.LastCheckedNs.Store(now)
 		sub.LastUpdatedNs.Store(now)
 		sub.SetLastError("")
+		sub.SetLastAppliedAttemptID(attemptID)
 		applied = true
 	})
 	if !applied {
@@ -298,10 +333,10 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 
 // handleUpdateFailure applies a fetch/parse failure to subscription state.
 // It ignores stale failures from an outdated attempt (config-version guard +
-// LastUpdatedNs stale-success guard).
+// monotonic attempt-id stale guard).
 func (s *SubscriptionScheduler) handleUpdateFailure(
 	sub *subscription.Subscription,
-	attemptStartedNs int64,
+	attemptID int64,
 	attemptConfigVersion int64,
 	stage string,
 	err error,
@@ -312,12 +347,13 @@ func (s *SubscriptionScheduler) handleUpdateFailure(
 		if sub.ConfigVersion() != attemptConfigVersion {
 			return
 		}
-		if sub.LastUpdatedNs.Load() > attemptStartedNs {
+		if sub.LastAppliedAttemptID() > attemptID {
 			return
 		}
 		now := time.Now().UnixNano()
 		sub.LastCheckedNs.Store(now)
 		sub.SetLastError(err.Error())
+		sub.SetLastAppliedAttemptID(attemptID)
 		applied = true
 	})
 	if !applied {

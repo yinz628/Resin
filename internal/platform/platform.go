@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"net/netip"
 	"regexp"
 	"sync"
@@ -29,8 +30,8 @@ type Platform struct {
 	Name string
 
 	// Filter configuration.
-	RegexFilters  []*regexp.Regexp
-	RegionFilters []string // lowercase ISO codes, supports negation "!xx"
+	RegexFilters   []*regexp.Regexp
+	RegionFilters  []string // lowercase ISO codes, supports negation "!xx"
 	ServiceFilters []string // openai/anthropic/unsupported
 
 	// Other config fields.
@@ -40,11 +41,16 @@ type Platform struct {
 	ReverseProxyFixedAccountHeader   string
 	ReverseProxyFixedAccountHeaders  []string
 	AllocationPolicy                 AllocationPolicy
+	// DeduplicateEgressIP keeps at most one routable node per egress IP.
+	// This is enabled for runtime platforms created from persisted models.
+	DeduplicateEgressIP bool
 
-	// Routable view & its lock.
+	// Routable view and its lock.
 	// viewMu serializes both FullRebuild and NotifyDirty.
-	view   *RoutableView
-	viewMu sync.Mutex
+	view        *RoutableView
+	viewMu      sync.Mutex
+	ownerByIP   map[netip.Addr]node.Hash
+	ownerByHash map[node.Hash]netip.Addr
 }
 
 // NewPlatform creates a Platform with an empty routable view.
@@ -55,17 +61,19 @@ func NewPlatform(id, name string, regexFilters []*regexp.Regexp, regionFilters [
 		RegexFilters:  regexFilters,
 		RegionFilters: regionFilters,
 		view:          NewRoutableView(),
+		ownerByIP:     make(map[netip.Addr]node.Hash),
+		ownerByHash:   make(map[node.Hash]netip.Addr),
 	}
 }
 
 // View returns the platform's routable view as a read-only interface.
-// External callers cannot Add/Remove/Clear — only FullRebuild and NotifyDirty can mutate.
+// External callers cannot Add/Remove/Clear; only FullRebuild and NotifyDirty can mutate.
 func (p *Platform) View() ReadOnlyView {
 	return p.view
 }
 
 // FullRebuild clears the routable view and re-evaluates all nodes from the pool.
-// Acquires viewMu — any concurrent NotifyDirty calls block until rebuild completes.
+// Acquires viewMu; any concurrent NotifyDirty calls block until rebuild completes.
 func (p *Platform) FullRebuild(
 	poolRange PoolRangeFunc,
 	subLookup node.SubLookupFunc,
@@ -75,37 +83,125 @@ func (p *Platform) FullRebuild(
 	defer p.viewMu.Unlock()
 
 	p.view.Clear()
+	p.resetOwnersLocked()
+
+	if !p.DeduplicateEgressIP {
+		poolRange(func(h node.Hash, entry *node.NodeEntry) bool {
+			if p.evaluateNode(entry, subLookup, geoLookup) {
+				p.view.Add(h)
+			}
+			return true
+		})
+		return
+	}
+
+	nextOwners := make(map[netip.Addr]node.Hash)
 	poolRange(func(h node.Hash, entry *node.NodeEntry) bool {
-		if p.evaluateNode(entry, subLookup, geoLookup) {
-			p.view.Add(h)
+		if !p.evaluateNode(entry, subLookup, geoLookup) {
+			return true
+		}
+		ip := entry.GetEgressIP()
+		if current, exists := nextOwners[ip]; !exists || isHashLess(h, current) {
+			nextOwners[ip] = h
 		}
 		return true
 	})
+
+	for ip, h := range nextOwners {
+		p.ownerByIP[ip] = h
+		p.ownerByHash[h] = ip
+		p.view.Add(h)
+	}
 }
 
 // NotifyDirty re-evaluates a single node and adds/removes it from the view.
-// Acquires viewMu — serialized with FullRebuild.
+// Acquires viewMu; serialized with FullRebuild.
 func (p *Platform) NotifyDirty(
 	h node.Hash,
 	getEntry GetEntryFunc,
 	subLookup node.SubLookupFunc,
 	geoLookup GeoLookupFunc,
 ) {
+	p.NotifyDirtyWithPoolRange(h, getEntry, nil, subLookup, geoLookup)
+}
+
+// NotifyDirtyWithPoolRange re-evaluates a single node and updates the view.
+// When egress dedupe is enabled and poolRange is provided, removing the current
+// owner of an egress IP will promote another eligible node with the same IP.
+func (p *Platform) NotifyDirtyWithPoolRange(
+	h node.Hash,
+	getEntry GetEntryFunc,
+	poolRange PoolRangeFunc,
+	subLookup node.SubLookupFunc,
+	geoLookup GeoLookupFunc,
+) {
 	p.viewMu.Lock()
 	defer p.viewMu.Unlock()
 
-	entry, ok := getEntry(h)
-	if !ok {
-		// Node was deleted from pool.
-		p.view.Remove(h)
+	if !p.DeduplicateEgressIP {
+		entry, ok := getEntry(h)
+		if !ok {
+			p.view.Remove(h)
+			return
+		}
+		if p.evaluateNode(entry, subLookup, geoLookup) {
+			p.view.Add(h)
+		} else {
+			p.view.Remove(h)
+		}
 		return
 	}
 
-	if p.evaluateNode(entry, subLookup, geoLookup) {
-		p.view.Add(h)
-	} else {
+	previousIP, wasOwner := p.ownerByHash[h]
+	entry, ok := getEntry(h)
+	if !ok {
 		p.view.Remove(h)
+		if wasOwner {
+			delete(p.ownerByHash, h)
+			delete(p.ownerByIP, previousIP)
+			p.recomputeOwnerForIPLocked(previousIP, poolRange, subLookup, geoLookup)
+		}
+		return
 	}
+
+	if !p.evaluateNode(entry, subLookup, geoLookup) {
+		p.view.Remove(h)
+		if wasOwner {
+			delete(p.ownerByHash, h)
+			delete(p.ownerByIP, previousIP)
+			p.recomputeOwnerForIPLocked(previousIP, poolRange, subLookup, geoLookup)
+		}
+		return
+	}
+
+	currentIP := entry.GetEgressIP()
+	if wasOwner && previousIP != currentIP {
+		delete(p.ownerByHash, h)
+		delete(p.ownerByIP, previousIP)
+		p.view.Remove(h)
+		p.recomputeOwnerForIPLocked(previousIP, poolRange, subLookup, geoLookup)
+	}
+
+	if ownerHash, exists := p.ownerByIP[currentIP]; !exists {
+		p.ownerByIP[currentIP] = h
+		p.ownerByHash[h] = currentIP
+		p.view.Add(h)
+		return
+	} else if ownerHash == h {
+		p.ownerByHash[h] = currentIP
+		p.view.Add(h)
+		return
+	} else if isHashLess(h, ownerHash) {
+		p.view.Remove(ownerHash)
+		delete(p.ownerByHash, ownerHash)
+		p.ownerByIP[currentIP] = h
+		p.ownerByHash[h] = currentIP
+		p.view.Add(h)
+		return
+	}
+
+	p.view.Remove(h)
+	delete(p.ownerByHash, h)
 }
 
 // evaluateNode checks all filter conditions for platform routability.
@@ -190,4 +286,51 @@ func MatchRegionFilter(region string, filters []string) bool {
 		return false
 	}
 	return true
+}
+
+func (p *Platform) resetOwnersLocked() {
+	clear(p.ownerByIP)
+	clear(p.ownerByHash)
+}
+
+func (p *Platform) recomputeOwnerForIPLocked(
+	targetIP netip.Addr,
+	poolRange PoolRangeFunc,
+	subLookup node.SubLookupFunc,
+	geoLookup GeoLookupFunc,
+) {
+	if poolRange == nil {
+		return
+	}
+
+	var (
+		best  node.Hash
+		found bool
+	)
+	poolRange(func(h node.Hash, entry *node.NodeEntry) bool {
+		if entry == nil {
+			return true
+		}
+		if entry.GetEgressIP() != targetIP {
+			return true
+		}
+		if !p.evaluateNode(entry, subLookup, geoLookup) {
+			return true
+		}
+		if !found || isHashLess(h, best) {
+			best = h
+			found = true
+		}
+		return true
+	})
+	if !found {
+		return
+	}
+	p.ownerByIP[targetIP] = best
+	p.ownerByHash[best] = targetIP
+	p.view.Add(best)
+}
+
+func isHashLess(a, b node.Hash) bool {
+	return bytes.Compare(a[:], b[:]) < 0
 }

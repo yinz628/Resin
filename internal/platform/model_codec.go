@@ -61,6 +61,7 @@ func NewConfiguredPlatform(
 		fixedHeaders = nil
 	}
 	plat := NewPlatform(id, name, regexFilters, regionFilters)
+	plat.DeduplicateEgressIP = true
 	plat.ServiceFilters = NormalizeServiceFilters(serviceFilters)
 	plat.StickyTTLNs = stickyTTLNs
 	plat.ReverseProxyMissAction = missAction

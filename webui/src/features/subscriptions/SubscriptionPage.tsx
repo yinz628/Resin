@@ -35,6 +35,15 @@ import type { Subscription } from "./types";
 
 type EnabledFilter = "all" | "enabled" | "disabled";
 type SubscriptionSourceType = "remote" | "local";
+type PlainProxyProtocol = "auto" | "http" | "https" | "socks5";
+
+const PLAIN_PROXY_PROTOCOL_HASH_KEY = "resin_plain_protocol";
+const PLAIN_PROXY_PROTOCOL_OPTIONS: Array<{ value: PlainProxyProtocol; label: string }> = [
+  { value: "auto", label: "Auto" },
+  { value: "http", label: "HTTP" },
+  { value: "https", label: "HTTPS" },
+  { value: "socks5", label: "SOCKS5" },
+];
 
 const SUBSCRIPTION_SOURCE_TABS: Array<{ key: SubscriptionSourceType; label: string; hint: string }> = [
   { key: "remote", label: "远程", hint: "从 HTTP/HTTPS 订阅链接拉取内容" },
@@ -45,6 +54,7 @@ const subscriptionCreateSchema = z.object({
   name: z.string().trim().min(1, "订阅名称不能为空"),
   source_type: z.enum(["remote", "local"]),
   url: z.string(),
+  plain_proxy_protocol: z.enum(["auto", "http", "https", "socks5"]),
   content: z.string(),
   update_interval: z.string().trim().min(1, "更新间隔不能为空"),
   ephemeral_node_evict_delay: z.string().trim().min(1, "临时节点驱逐延迟不能为空"),
@@ -78,6 +88,98 @@ const LOCAL_SOURCE_UPDATE_INTERVAL = "12h";
 const SUBSCRIPTION_DISABLE_HINT = "禁用订阅后，相关节点不会参与平台路由、健康统计或自动探测。";
 const SUBSCRIPTION_EPHEMERAL_HINT = "临时订阅的非健康节点会在一段时间后被自动删除。订阅本身不会被删除。";
 
+function normalizePlainProxyProtocol(raw: string): PlainProxyProtocol {
+  switch (raw.trim().toLowerCase()) {
+    case "http":
+      return "http";
+    case "https":
+      return "https";
+    case "socks5":
+      return "socks5";
+    default:
+      return "auto";
+  }
+}
+
+function parseSubscriptionURLForForm(rawURL: string): { url: string; plainProxyProtocol: PlainProxyProtocol } {
+  const trimmed = rawURL.trim();
+  if (!trimmed) {
+    return { url: "", plainProxyProtocol: "auto" };
+  }
+  try {
+    const parsed = new URL(trimmed);
+    const hash = parsed.hash.startsWith("#") ? parsed.hash.slice(1) : "";
+    if (!hash) {
+      return { url: parsed.toString(), plainProxyProtocol: "auto" };
+    }
+
+    const items = hash
+      .split("&")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    const keptItems: string[] = [];
+    let plainProxyProtocol: PlainProxyProtocol = "auto";
+
+    for (const item of items) {
+      const equalIndex = item.indexOf("=");
+      const rawKey = (equalIndex >= 0 ? item.slice(0, equalIndex) : item).trim().toLowerCase();
+      if (rawKey !== PLAIN_PROXY_PROTOCOL_HASH_KEY) {
+        keptItems.push(item);
+        continue;
+      }
+      const rawValue = equalIndex >= 0 ? item.slice(equalIndex + 1) : "";
+      let decodedValue = rawValue;
+      try {
+        decodedValue = decodeURIComponent(rawValue);
+      } catch {
+        decodedValue = rawValue;
+      }
+      plainProxyProtocol = normalizePlainProxyProtocol(decodedValue);
+    }
+
+    parsed.hash = keptItems.length > 0 ? `#${keptItems.join("&")}` : "";
+    return {
+      url: parsed.toString(),
+      plainProxyProtocol,
+    };
+  } catch {
+    return {
+      url: trimmed,
+      plainProxyProtocol: "auto",
+    };
+  }
+}
+
+function buildSubscriptionURLWithPlainProxyProtocol(rawURL: string, plainProxyProtocol: PlainProxyProtocol): string {
+  const trimmed = rawURL.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    const hash = parsed.hash.startsWith("#") ? parsed.hash.slice(1) : "";
+    const items = hash
+      .split("&")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    const keptItems = items.filter((item) => {
+      const equalIndex = item.indexOf("=");
+      const rawKey = (equalIndex >= 0 ? item.slice(0, equalIndex) : item).trim().toLowerCase();
+      return rawKey !== PLAIN_PROXY_PROTOCOL_HASH_KEY;
+    });
+
+    if (plainProxyProtocol !== "auto") {
+      keptItems.push(`${PLAIN_PROXY_PROTOCOL_HASH_KEY}=${encodeURIComponent(plainProxyProtocol)}`);
+    }
+    parsed.hash = keptItems.length > 0 ? `#${keptItems.join("&")}` : "";
+    return parsed.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
 function extractHostname(url: string): string {
   try {
     return new URL(url).hostname;
@@ -87,10 +189,15 @@ function extractHostname(url: string): string {
 }
 
 function subscriptionToEditForm(subscription: Subscription): SubscriptionEditForm {
+  const parsedRemoteURL = subscription.source_type === "remote"
+    ? parseSubscriptionURLForForm(subscription.url)
+    : { url: subscription.url, plainProxyProtocol: "auto" as PlainProxyProtocol };
+
   return {
     name: subscription.name,
     source_type: subscription.source_type,
-    url: subscription.url,
+    url: parsedRemoteURL.url,
+    plain_proxy_protocol: parsedRemoteURL.plainProxyProtocol,
     content: subscription.content ?? "",
     update_interval: subscription.update_interval,
     ephemeral_node_evict_delay: subscription.ephemeral_node_evict_delay,
@@ -182,6 +289,7 @@ export function SubscriptionPage() {
       name: "",
       source_type: "remote",
       url: "",
+      plain_proxy_protocol: "auto",
       content: "",
       update_interval: "12h",
       ephemeral_node_evict_delay: "72h",
@@ -199,6 +307,7 @@ export function SubscriptionPage() {
       name: "",
       source_type: "remote",
       url: "",
+      plain_proxy_protocol: "auto",
       content: "",
       update_interval: "12h",
       ephemeral_node_evict_delay: "72h",
@@ -253,6 +362,7 @@ export function SubscriptionPage() {
         name: "",
         source_type: "remote",
         url: "",
+        plain_proxy_protocol: "auto",
         content: "",
         update_interval: LOCAL_SOURCE_UPDATE_INTERVAL,
         ephemeral_node_evict_delay: "72h",
@@ -279,7 +389,7 @@ export function SubscriptionPage() {
         enabled: formData.enabled,
         ephemeral: formData.ephemeral,
         ...(formData.source_type === "remote"
-          ? { url: formData.url.trim() }
+          ? { url: buildSubscriptionURLWithPlainProxyProtocol(formData.url, formData.plain_proxy_protocol) }
           : { content: formData.content }),
       };
       return updateSubscription(selectedSubscription.id, payload);
@@ -416,7 +526,7 @@ export function SubscriptionPage() {
       enabled: values.enabled,
       ephemeral: values.ephemeral,
       ...(values.source_type === "remote"
-        ? { url: values.url.trim() }
+        ? { url: buildSubscriptionURLWithPlainProxyProtocol(values.url, values.plain_proxy_protocol) }
         : { content: values.content }),
     };
     await createMutation.mutateAsync(payload);
@@ -810,6 +920,19 @@ export function SubscriptionPage() {
                           <p className="field-error">{t(editForm.formState.errors.url.message)}</p>
                         ) : null}
                       </div>
+
+                      <div className="field-group field-span-2">
+                        <label className="field-label" htmlFor="edit-sub-plain-proxy-protocol">
+                          {t("纯 IP:PORT 默认协议")}
+                        </label>
+                        <Select id="edit-sub-plain-proxy-protocol" {...editForm.register("plain_proxy_protocol")}>
+                          {PLAIN_PROXY_PROTOCOL_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {t(option.label)}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
                     </>
                   ) : (
                     <div className="field-group field-span-2">
@@ -1051,6 +1174,19 @@ export function SubscriptionPage() {
                       <p className="field-error">{t(createForm.formState.errors.url.message)}</p>
                     ) : null}
                   </div>
+
+                  <div className="field-group field-span-2">
+                    <label className="field-label" htmlFor="create-sub-plain-proxy-protocol">
+                      {t("纯 IP:PORT 默认协议")}
+                    </label>
+                    <Select id="create-sub-plain-proxy-protocol" {...createForm.register("plain_proxy_protocol")}>
+                      {PLAIN_PROXY_PROTOCOL_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {t(option.label)}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
                 </>
               ) : (
                 <div className="field-group field-span-2">
@@ -1136,3 +1272,4 @@ export function SubscriptionPage() {
     </section>
   );
 }
+
