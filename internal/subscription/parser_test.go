@@ -1814,6 +1814,28 @@ func TestParseGeneralSubscription_SSURIWithSeparatedPluginAndPluginOpts(t *testi
 	}
 }
 
+func TestParseGeneralSubscription_SSURIWithObfsPluginAlias(t *testing.T) {
+	data := []byte(
+		"ss://YWVzLTEyOC1nY206cGFzcw==@1.1.1.1:8388?plugin=obfs%3Bobfs%3Dhttp%3Bobfs-host%3Dobfs.example.com#ss-obfs",
+	)
+
+	nodes, err := ParseGeneralSubscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 parsed node, got %d", len(nodes))
+	}
+
+	obj := parseNodeRaw(t, nodes[0].RawOptions)
+	if got := obj["plugin"]; got != "obfs-local" {
+		t.Fatalf("plugin: got %v", got)
+	}
+	if got := obj["plugin_opts"]; got != "obfs=http;obfs-host=obfs.example.com" {
+		t.Fatalf("plugin_opts: got %v", got)
+	}
+}
+
 func TestParseGeneralSubscription_SSURIWithPluginOptionsUnescapedSemicolons(t *testing.T) {
 	data := []byte(
 		"ss://YWVzLTEyOC1nY206cGFzcw==@1.1.1.1:8388?plugin=v2ray-plugin;mode=websocket;host=ws.example.com;tls#ss-plugin-raw",
@@ -1832,6 +1854,127 @@ func TestParseGeneralSubscription_SSURIWithPluginOptionsUnescapedSemicolons(t *t
 		t.Fatalf("plugin: got %v", got)
 	}
 	if got := obj["plugin_opts"]; got != "mode=websocket;host=ws.example.com;tls" {
+		t.Fatalf("plugin_opts: got %v", got)
+	}
+}
+
+func TestParseGeneralSubscription_ClashJSON_SSPluginAliasObfs(t *testing.T) {
+	data := []byte(`{
+		"proxies": [
+			{
+				"name": "ss-obfs",
+				"type": "ss",
+				"server": "1.1.1.1",
+				"port": 8388,
+				"cipher": "aes-128-gcm",
+				"password": "pass",
+				"plugin": "obfs",
+				"plugin-opts": "obfs=http;obfs-host=obfs.example.com"
+			}
+		]
+	}`)
+
+	nodes, err := ParseGeneralSubscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 parsed node, got %d", len(nodes))
+	}
+
+	obj := parseNodeRaw(t, nodes[0].RawOptions)
+	if got := obj["plugin"]; got != "obfs-local" {
+		t.Fatalf("plugin: got %v", got)
+	}
+	if got := obj["plugin_opts"]; got != "obfs=http;obfs-host=obfs.example.com" {
+		t.Fatalf("plugin_opts: got %v", got)
+	}
+}
+
+func TestParseGeneralSubscription_SingboxJSON_SSPluginAliasObfs(t *testing.T) {
+	data := []byte(`{
+		"outbounds": [
+			{
+				"type": "shadowsocks",
+				"tag": "ss-obfs-singbox",
+				"server": "1.1.1.1",
+				"server_port": 8388,
+				"method": "aes-128-gcm",
+				"password": "pass",
+				"plugin": "obfs",
+				"plugin_opts": "obfs=http;obfs-host=obfs.example.com"
+			}
+		]
+	}`)
+
+	nodes, err := ParseGeneralSubscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 parsed node, got %d", len(nodes))
+	}
+
+	obj := parseNodeRaw(t, nodes[0].RawOptions)
+	if got := obj["plugin"]; got != "obfs-local" {
+		t.Fatalf("plugin: got %v", got)
+	}
+	if got := obj["plugin_opts"]; got != "obfs=http;obfs-host=obfs.example.com" {
+		t.Fatalf("plugin_opts: got %v", got)
+	}
+}
+
+func TestParseGeneralSubscription_SingboxJSON_SSPluginAliasObfsModeHostOptions(t *testing.T) {
+	data := []byte(`{
+		"outbounds": [
+			{
+				"type": "shadowsocks",
+				"tag": "ss-obfs-singbox-mode-host",
+				"server": "1.1.1.1",
+				"server_port": 8388,
+				"method": "aes-128-gcm",
+				"password": "pass",
+				"plugin": "obfs",
+				"plugin_opts": "host=example.com;mode=http;tls"
+			}
+		]
+	}`)
+
+	nodes, err := ParseGeneralSubscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 parsed node, got %d", len(nodes))
+	}
+
+	obj := parseNodeRaw(t, nodes[0].RawOptions)
+	if got := obj["plugin"]; got != "obfs-local" {
+		t.Fatalf("plugin: got %v", got)
+	}
+	if got := obj["plugin_opts"]; got != "obfs=http;obfs-host=example.com;tls" {
+		t.Fatalf("plugin_opts: got %v", got)
+	}
+}
+
+func TestParseGeneralSubscription_SSURIWithObfsModeHostOptions(t *testing.T) {
+	data := []byte(
+		"ss://YWVzLTEyOC1nY206cGFzcw==@1.1.1.1:8388?plugin=obfs%3Bhost%3Dexample.com%3Bmode%3Dhttp%3Btls#ss-obfs-mode-host",
+	)
+
+	nodes, err := ParseGeneralSubscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 parsed node, got %d", len(nodes))
+	}
+
+	obj := parseNodeRaw(t, nodes[0].RawOptions)
+	if got := obj["plugin"]; got != "obfs-local" {
+		t.Fatalf("plugin: got %v", got)
+	}
+	if got := obj["plugin_opts"]; got != "obfs=http;obfs-host=example.com;tls" {
 		t.Fatalf("plugin_opts: got %v", got)
 	}
 }

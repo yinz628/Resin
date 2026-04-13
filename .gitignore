@@ -3,3 +3,6 @@ sing-box-reference
 .agents
 .devcontainer
 start-instance.sh
+ssh/
+ssh2/
+ssh3/

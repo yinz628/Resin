@@ -209,5 +209,39 @@ func shouldAcceptSecureDNSResponse(response *mDNS.Msg) bool {
 	if response == nil {
 		return false
 	}
-	return response.Rcode == mDNS.RcodeSuccess
+	if response.Rcode != mDNS.RcodeSuccess {
+		return false
+	}
+
+	// Reject loopback-only A/AAAA answers.
+	//
+	// Some upstream resolvers intentionally "sinkhole" certain CDN/anti-abuse
+	// domains by returning 127.0.0.1/::1. For outbound server resolution this
+	// is never useful and causes hard-to-debug dial failures like:
+	//   dial tcp 127.0.0.1:<server_port>: connect: connection refused
+	//
+	// By treating loopback-only answers as invalid, we allow the failover chain
+	// to fall back to the next upstream (often the local/system resolver).
+	hasIP := false
+	allLoopbackOrUnspecified := true
+	for _, rr := range response.Answer {
+		switch v := rr.(type) {
+		case *mDNS.A:
+			hasIP = true
+			if ip := v.A; ip != nil && !ip.IsLoopback() && !ip.IsUnspecified() {
+				allLoopbackOrUnspecified = false
+			}
+		case *mDNS.AAAA:
+			hasIP = true
+			if ip := v.AAAA; ip != nil && !ip.IsLoopback() && !ip.IsUnspecified() {
+				allLoopbackOrUnspecified = false
+			}
+		}
+	}
+
+	if hasIP && allLoopbackOrUnspecified {
+		return false
+	}
+
+	return true
 }

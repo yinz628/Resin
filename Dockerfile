@@ -29,16 +29,38 @@ RUN CGO_ENABLED=0 go build -trimpath -tags "with_quic with_wireguard with_grpc w
   -X github.com/Resinat/Resin/internal/buildinfo.BuildTime=${BUILD_TIME}" \
   -o /out/resin ./cmd/resin
 
+FROM alpine:3.21 AS obfs-builder
+RUN apk add --no-cache \
+  autoconf \
+  automake \
+  build-base \
+  git \
+  libev-dev \
+  libsodium-dev \
+  libtool \
+  linux-headers \
+  pcre-dev
+
+RUN git clone --depth 1 https://github.com/shadowsocks/simple-obfs.git /tmp/simple-obfs \
+  && cd /tmp/simple-obfs \
+  && git submodule update --init --recursive \
+  && ./autogen.sh \
+  && ./configure --prefix=/usr/local --disable-documentation \
+  && make -j"$(nproc)" \
+  && make install \
+  && strip /usr/local/bin/obfs-local || true
+
 FROM alpine:3.21
 # NOTE: Keep this runtime stage in sync with .github/Dockerfile.release.
 # GHCR release images are built from .github/Dockerfile.release, not this file.
-RUN apk add --no-cache ca-certificates tzdata su-exec \
+RUN apk add --no-cache ca-certificates tzdata su-exec libev libsodium pcre \
   && addgroup -S resin \
   && adduser -S -G resin -h /var/lib/resin resin \
   && mkdir -p /var/cache/resin /var/lib/resin /var/log/resin \
   && chown -R resin:resin /var/cache/resin /var/lib/resin /var/log/resin
 
 COPY --from=go-builder /out/resin /usr/local/bin/resin
+COPY --from=obfs-builder /usr/local/bin/obfs-local /usr/local/bin/obfs-local
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

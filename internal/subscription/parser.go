@@ -228,18 +228,17 @@ func parseSingboxOutbounds(raw json.RawMessage) ([]ParsedNode, error) {
 func parseRawOutbounds(outbounds []json.RawMessage) []ParsedNode {
 	nodes := make([]ParsedNode, 0, len(outbounds))
 	for _, raw := range outbounds {
-		var header outboundHeader
-		if err := json.Unmarshal(raw, &header); err != nil {
-			// Skip malformed individual outbound — do not fail the entire parse.
+		var outbound map[string]any
+		if err := json.Unmarshal(raw, &outbound); err != nil {
+			// Skip malformed individual outbound; do not fail the entire parse.
 			continue
 		}
-		if !supportedOutboundTypes[header.Type] {
+		if !supportedOutboundTypes[getString(outbound, "type")] {
 			continue
 		}
-		nodes = append(nodes, ParsedNode{
-			Tag:        header.Tag,
-			RawOptions: json.RawMessage(append([]byte(nil), raw...)),
-		})
+		if node, ok := buildParsedNode(outbound); ok {
+			nodes = append(nodes, node)
+		}
 	}
 	return nodes
 }
@@ -1857,6 +1856,81 @@ func normalizeShadowsocksMethod(raw string) string {
 	return strings.ToLower(method)
 }
 
+func normalizeShadowsocksPlugin(raw string) string {
+	plugin := strings.TrimSpace(raw)
+	switch strings.ToLower(plugin) {
+	case "obfs", "simple-obfs", "simple_obfs":
+		return "obfs-local"
+	default:
+		return plugin
+	}
+}
+
+func normalizeShadowsocksPluginOptions(plugin string, rawOptions string) string {
+	options := strings.TrimSpace(rawOptions)
+	if options == "" {
+		return ""
+	}
+	if !strings.EqualFold(plugin, "obfs-local") {
+		return options
+	}
+
+	parts := strings.Split(options, ";")
+	rest := make([]string, 0, len(parts))
+	var obfs string
+	var obfsHost string
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		key, value, hasValue := strings.Cut(part, "=")
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			continue
+		}
+
+		normalizedKey := strings.ToLower(key)
+		switch normalizedKey {
+		case "mode":
+			normalizedKey = "obfs"
+		case "host":
+			normalizedKey = "obfs-host"
+		}
+
+		switch normalizedKey {
+		case "obfs":
+			if hasValue && value != "" && obfs == "" {
+				obfs = value
+				continue
+			}
+		case "obfs-host":
+			if hasValue && value != "" && obfsHost == "" {
+				obfsHost = value
+				continue
+			}
+		}
+
+		rest = append(rest, part)
+	}
+
+	out := make([]string, 0, len(rest)+2)
+	if obfs != "" {
+		out = append(out, "obfs="+obfs)
+	}
+	if obfsHost != "" {
+		out = append(out, "obfs-host="+obfsHost)
+	}
+	out = append(out, rest...)
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, ";")
+}
+
 func applyClashDialFields(outbound map[string]any, proxy map[string]any) {
 	if detour := strings.TrimSpace(getString(proxy, "dialer-proxy", "dialer_proxy")); detour != "" {
 		outbound["detour"] = detour
@@ -2281,7 +2355,7 @@ func parseNetchURI(uri string) (ParsedNode, bool) {
 			"method":      method,
 			"password":    password,
 		}
-		if plugin := strings.TrimSpace(getString(nodeMap, "Plugin")); plugin != "" {
+		if plugin := normalizeShadowsocksPlugin(getString(nodeMap, "Plugin")); plugin != "" {
 			outbound["plugin"] = plugin
 		}
 		if pluginOpts := strings.TrimSpace(getString(nodeMap, "PluginOption")); pluginOpts != "" {
@@ -2682,7 +2756,7 @@ func parseSSDURI(uri string) ([]ParsedNode, bool) {
 			"password":    password,
 		}
 
-		plugin := strings.TrimSpace(firstNonEmpty(getString(server, "plugin"), defaultPlugin))
+		plugin := normalizeShadowsocksPlugin(firstNonEmpty(getString(server, "plugin"), defaultPlugin))
 		pluginOpts := strings.TrimSpace(firstNonEmpty(
 			getString(server, "plugin_options"),
 			getString(server, "plugin_opts"),
@@ -3609,11 +3683,12 @@ func parseSSPluginFromQuery(rawQuery string) (plugin string, pluginOpts string) 
 						pluginOpts = rawOpts
 					}
 				}
-				return plugin, pluginOpts
+				return normalizeShadowsocksPlugin(plugin), pluginOpts
 			}
 		}
 		if spec := strings.TrimSpace(firstNonEmpty(query.Get("plugin-opts"), query.Get("plugin_opts"))); spec != "" {
-			return splitSSPluginSpec(spec)
+			plugin, pluginOpts = splitSSPluginSpec(spec)
+			return normalizeShadowsocksPlugin(plugin), pluginOpts
 		}
 	}
 
@@ -3621,7 +3696,8 @@ func parseSSPluginFromQuery(rawQuery string) (plugin string, pluginOpts string) 
 	if spec == "" {
 		return "", ""
 	}
-	return splitSSPluginSpec(spec)
+	plugin, pluginOpts = splitSSPluginSpec(spec)
+	return normalizeShadowsocksPlugin(plugin), pluginOpts
 }
 
 func extractSSPluginSpecFromRawQuery(rawQuery string) string {
@@ -3891,7 +3967,7 @@ func applyTLSCertificateFromClash(tls map[string]any, proxy map[string]any) {
 }
 
 func setSSPluginFromClash(outbound map[string]any, proxy map[string]any) {
-	plugin := strings.TrimSpace(getString(proxy, "plugin"))
+	plugin := normalizeShadowsocksPlugin(getString(proxy, "plugin"))
 	pluginOpts := strings.TrimSpace(getString(proxy, "plugin-opts-string", "plugin_opts_string", "plugin-opts", "plugin_opts"))
 	if pluginOpts == "" {
 		if optsMap, ok := getMap(proxy, "plugin-opts", "plugin_opts"); ok && len(optsMap) > 0 {
@@ -4336,6 +4412,18 @@ func setWSPathAndEarlyData(transport map[string]any, rawPath string) {
 }
 
 func buildParsedNode(outbound map[string]any) (ParsedNode, bool) {
+	if strings.EqualFold(getString(outbound, "type"), "shadowsocks") {
+		if plugin := normalizeShadowsocksPlugin(getString(outbound, "plugin")); plugin != "" {
+			outbound["plugin"] = plugin
+		}
+		if plugin := getString(outbound, "plugin"); plugin != "" {
+			pluginOpts := normalizeShadowsocksPluginOptions(plugin, getString(outbound, "plugin_opts"))
+			if pluginOpts != "" {
+				outbound["plugin_opts"] = pluginOpts
+			}
+		}
+	}
+
 	raw, err := json.Marshal(outbound)
 	if err != nil {
 		return ParsedNode{}, false
